@@ -1,5 +1,78 @@
 # Session Notes - ABS Platform
 
+## Session 3: December 5-6, 2025 - File Editor with Separate Windows
+
+### Objectives
+- Implement file editor in separate floating windows
+- Fix crash when closing editor windows
+- Achieve stable, performant file editing
+
+### Work Completed
+
+#### 1. Separate Window File Editor ✅
+- **Challenge**: Monaco Editor (WebView2) crashes when closing separate window via OS X button
+- **Root Cause**: `desktop_multi_window` creates separate PROCESSES for each window. WebView2 doesn't cleanly destroy when process terminates suddenly.
+- **Investigation**: 
+  - Tried async disposal with delays (100ms-1000ms) - failed
+  - Tried setState guards and mounted checks - failed
+  - Tried native WM_CLOSE interception - can't reach sub-window processes
+  - Tried MethodChannel bidirectional communication - doesn't work across processes
+  - Tried lifecycle observers - too late to help
+  - TextField implementation - WORKED PERFECTLY (native Flutter)
+- **Solution**: Replaced Monaco Editor with `re_editor` (native Flutter code editor)
+- **Status**: Fully working, no crashes
+
+#### 2. re_editor Integration ✅
+- **Package**: `re_editor: ^0.8.0`
+- **Location**: `lib/windows/file_editor_window.dart`
+- **Features**:
+  - Native Flutter widget (no WebView dependencies)
+  - High-performance for large files (1000+ lines)
+  - CodeLineEditingController for text management
+  - Custom scroll controllers for smooth selection
+  - Word wrap enabled
+  - Consolas font, 14pt
+- **Status**: Working perfectly in separate windows
+
+#### 3. Window Routing Fix ✅
+- **Problem**: Opening files launched AI chat window instead of file editor
+- **Root Cause**: Missing `windowType: 'file_editor'` parameter in window creation
+- **Solution**: Added windowType parameter to route correctly in main.dart
+- **Status**: Fixed
+
+#### 4. Scroll Performance Enhancement ✅
+- **Feature**: Custom ScrollController configuration for faster text selection scrolling
+- **Implementation**: CodeScrollController with separate vertical/horizontal scrollers
+- **Status**: Implemented and working
+
+#### 5. Code Documentation Updates ✅
+- Updated file_editor_window.dart header comments
+- Removed obsolete Monaco references
+- Documented re_editor usage
+- Cleaned up unused code (_onContentChanged, _showUnsavedChangesDialog)
+
+### Technical Discoveries
+
+**Critical Insight**: `desktop_multi_window` package creates SEPARATE PROCESSES for each window:
+- Each sub-window has its own FlutterEngine and native window handle
+- Global variables/channels don't transfer across processes
+- OS window close (X button) sends WM_DESTROY directly to process
+- WebView2 embedded in process doesn't cleanly destroy on abrupt termination
+- Native Flutter widgets destroy cleanly (proven with TextField)
+- **Conclusion**: WebView-based editors fundamentally incompatible with multi-window architecture
+
+### Next Steps
+
+1. Add syntax highlighting to re_editor (configure CodeHighlightTheme)
+2. Add line numbers and code folding
+3. Configure language-specific highlighting (Markdown, Dart, etc.)
+4. Test with very large files (10k+ lines)
+5. Add search/replace UI (re_editor has built-in logic)
+
+---
+
+# Session Notes - ABS Platform
+
 ## Session 2: December 5, 2025 - File Viewer & Session Management
 
 ### Objectives

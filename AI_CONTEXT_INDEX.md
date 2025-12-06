@@ -10,22 +10,24 @@
 
 ## Quick Start for AI Assistants
 
-**Current Focus**: App is now fully functional - all core features working
+**Current Focus**: File editing in separate windows - stable and performant
 
 **Recent Changes**: 
-- Fixed model selector parameter order bug ✅
-- Implemented clickable file viewer ✅
-- Added session creation functionality ✅
-- Fixed widget tests ✅
+- Replaced Monaco/WebView with re_editor for file editing ✅
+- Fixed crash on separate window close ✅
+- Implemented native Flutter code editor with scroll optimization ✅
+- Fixed window routing (file editor vs AI chat) ✅
 - Built fresh Windows release ✅
 
 ## Key Files
 
 ### Core Application
-- `lib/main.dart` - App entry point, Hive initialization
+- `lib/main.dart` - App entry point, Hive initialization, window routing
 - `lib/screens/project_detail_screen.dart` - Project view with FAB
-- `lib/screens/ai_chat_screen.dart` - AI chat interface (HAS BUG)
+- `lib/screens/ai_chat_screen.dart` - AI chat interface
 - `lib/screens/settings_screen.dart` - API key management
+- `lib/windows/file_editor_window.dart` - Separate window file editor (re_editor)
+- `lib/windows/ai_chat_window.dart` - Separate window AI chat
 
 ### State Management
 - `lib/providers/ai_provider.dart` - AI configuration, model selection
@@ -59,17 +61,21 @@
 - Settings with API key management
 - FAB for easy AI chat access
 - Provider and model selection UI
-- **File viewer with copy functionality**
-- **Session creation and tracking**
-- **SESSION_NOTES.md auto-update**
+- **File editor in separate floating windows**
+- **File save with modified indicator**
+- **Native Flutter code editor (re_editor)**
+- **Optimized scroll performance**
+- **Crash-free window closing**
+- Session creation and tracking
+- SESSION_NOTES.md auto-update
 
 ### Known Issues ⚠️
 1. **Old Project Data** (NON-BLOCKING) - Null subtype error on old data
-2. **Debug Logging** - Still present in ai_chat_screen.dart (cleanup needed)
 
 ### Missing Features ⏳
+- Syntax highlighting in file editor
+- Line numbers and code folding
 - File auto-refresh after AI updates
-- Markdown rendering in file viewer
 - Session detail view
 - Session end functionality
 
@@ -93,7 +99,18 @@ flutter analyze lib/screens/filename.dart
 1. FAB placement: Bottom right (Material Design standard)
 2. Keep both FAB and app bar icon for flexibility
 3. Model selection: Per-provider, not per-project
-4. Debug first: Add logging before fixing
+4. **Code Editor**: Use re_editor (native Flutter) instead of Monaco (WebView)
+5. **Multi-Window Architecture**: desktop_multi_window creates separate processes - WebView incompatible
+
+## Technical Constraints
+
+**WebView + desktop_multi_window Incompatibility**:
+- `desktop_multi_window` creates separate PROCESSES for each window
+- Each sub-window has independent FlutterEngine and message handling
+- OS window close (X button) terminates process before Dart disposal code runs
+- WebView2 embedded components don't cleanly destroy on process termination
+- Native Flutter widgets (TextField, re_editor) destroy cleanly
+- **Solution**: Use native Flutter editors, avoid WebView in separate windows
 
 ---
 

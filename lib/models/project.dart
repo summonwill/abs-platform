@@ -104,15 +104,19 @@ class Project {
 
   factory Project.fromJson(Map<String, dynamic> json) {
     return Project(
-      id: json['id'],
-      name: json['name'],
-      path: json['path'],
-      description: json['description'],
-      createdAt: DateTime.parse(json['createdAt']),
-      lastModified: DateTime.parse(json['lastModified']),
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Unnamed Project',
+      path: json['path'] as String? ?? '',
+      description: json['description'] as String?,
+      createdAt: json['createdAt'] != null 
+          ? DateTime.parse(json['createdAt'] as String)
+          : DateTime.now(),
+      lastModified: json['lastModified'] != null
+          ? DateTime.parse(json['lastModified'] as String)
+          : DateTime.now(),
       governanceFiles: List<String>.from(json['governanceFiles'] ?? []),
       sessions: (json['sessions'] as List?)
-              ?.map((s) => Session.fromJson(s))
+              ?.map((s) => Session.fromJson(s as Map<String, dynamic>))
               .toList() ??
           [],
       status: ProjectStatus.values.firstWhere(
@@ -200,13 +204,16 @@ class Session {
 
   factory Session.fromJson(Map<String, dynamic> json) {
     return Session(
-      id: json['id'],
-      projectId: json['projectId'],
-      title: json['title'],
-      startedAt: DateTime.parse(json['startedAt']),
-      endedAt:
-          json['endedAt'] != null ? DateTime.parse(json['endedAt']) : null,
-      notes: json['notes'],
+      id: json['id'] as String?,
+      projectId: json['projectId'] as String? ?? '',
+      title: json['title'] as String? ?? 'Untitled Session',
+      startedAt: json['startedAt'] != null
+          ? DateTime.parse(json['startedAt'] as String)
+          : DateTime.now(),
+      endedAt: json['endedAt'] != null 
+          ? DateTime.parse(json['endedAt'] as String) 
+          : null,
+      notes: json['notes'] as String?,
       filesModified: List<String>.from(json['filesModified'] ?? []),
       status: SessionStatus.values.firstWhere(
         (e) => e.toString() == json['status'],

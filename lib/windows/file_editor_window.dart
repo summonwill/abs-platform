@@ -3,24 +3,32 @@
 /// Purpose: Entry point for separate file editor windows spawned via desktop_multi_window
 /// Key Components:
 ///   - Window initialization and Hive setup
-///   - Custom dark title bar
-///   - MonacoEditor integration in isolated window process
+///   - re_editor integration (native Flutter code editor)
+///   - File save functionality with modified indicator
+///   - Custom scroll controllers for optimized selection performance
 ///   - File data reconstruction from JSON arguments
 /// 
 /// Dependencies:
-///   - desktop_multi_window: Multi-window infrastructure
+///   - desktop_multi_window: Multi-window infrastructure (separate processes)
 ///   - hive_flutter: Storage access in separate window
-///   - monaco_editor: High-performance editor widget
+///   - re_editor: Native Flutter code editor (WebView-free)
 /// 
-/// Last Modified: December 5, 2025
+/// Technical Notes:
+///   - Uses re_editor instead of Monaco/WebView due to multi-window incompatibility
+///   - desktop_multi_window creates separate PROCESSES - WebView crashes on close
+///   - Native Flutter widgets (re_editor, TextField) work perfectly
+/// 
+/// Last Modified: December 6, 2025
+library;
 
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import '../widgets/monaco_editor.dart';
+import 'package:re_editor/re_editor.dart';
 import '../services/file_service.dart';
-import '../services/debug_logger.dart';
 
 /// Separate window for file editing
 /// 
@@ -39,7 +47,7 @@ class FileEditorWindow extends StatefulWidget {
   State<FileEditorWindow> createState() => _FileEditorWindowState();
 }
 
-class _FileEditorWindowState extends State<FileEditorWindow> {
+class _FileEditorWindowState extends State<FileEditorWindow> with WidgetsBindingObserver {
   bool _isInitialized = false;
   late String _fileName;
   late String _projectPath;
@@ -47,20 +55,49 @@ class _FileEditorWindowState extends State<FileEditorWindow> {
   late String _currentContent;
   bool _isModified = false;
   bool _isSaving = false;
+  bool _isClosing = false;
+  final CodeLineEditingController _controller = CodeLineEditingController.fromText('');
+  late final ScrollController _verticalScroller;
+  late final ScrollController _horizontalScroller;
+  
+  static const platform = MethodChannel('window_events');
+
+  void _logToFile(String message) {
+    try {
+      final logFile = File('C:\\Users\\summo\\OneDrive\\Desktop\\crash_debug.log');
+      logFile.writeAsStringSync('${DateTime.now()}: $message\n', mode: FileMode.append, flush: true);
+    } catch (e) {
+      // Ignore logging errors
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    
+    // Initialize scroll controllers with faster physics
+    _verticalScroller = ScrollController();
+    _horizontalScroller = ScrollController();
+    _logToFile('FileEditor: Window created, observer added');
     _initialize();
+  }
+  
+  @override
+  void dispose() {
+    _logToFile('FileEditor: dispose() called');
+    _controller.dispose();
+    _verticalScroller.dispose();
+    _horizontalScroller.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+    _logToFile('FileEditor: dispose() complete');
   }
 
   Future<void> _initialize() async {
     try {
-      await DebugLogger.log('FileEditor: Starting initialization');
-      
       // Initialize Hive for this window
       await Hive.initFlutter();
-      await DebugLogger.log('FileEditor: Hive initialized');
       
       // Extract file data from arguments
       _fileName = widget.args['fileName'] as String;
@@ -68,25 +105,57 @@ class _FileEditorWindowState extends State<FileEditorWindow> {
       _content = widget.args['content'] as String;
       _currentContent = _content;
       
-      await DebugLogger.log('FileEditor: Opening file: $_fileName (${_content.length} chars)');
+      // Initialize editor controller  
+      _controller.text = _content;
+      _controller.addListener(() {
+        final newContent = _controller.text;
+        _currentContent = newContent;
+        final hasChanges = newContent != _content;
+        if (_isModified != hasChanges && mounted) {
+          setState(() => _isModified = hasChanges);
+        }
+      });
       
+      // Guard against setState after dispose
+      if (!mounted) return;
       setState(() => _isInitialized = true);
-      await DebugLogger.log('FileEditor: Initialization complete');
     } catch (e, stackTrace) {
-      await DebugLogger.error('FileEditor: Initialization failed', e, stackTrace);
+      print('FileEditor: Initialization failed: $e');
+      print('Stack trace: $stackTrace');
       rethrow;
     }
   }
 
-  void _onContentChanged(String newContent) {
-    _currentContent = newContent;
-    final hasChanges = newContent != _content;
-    if (_isModified != hasChanges) {
-      setState(() => _isModified = hasChanges);
+  Future<void> _closeWindow() async {
+    if (_isClosing) {
+      _logToFile('FileEditor: _closeWindow called while already closing, ignoring');
+      return;
+    }
+    _isClosing = true;
+
+    _logToFile('=== START _closeWindow ===');
+    print('\n===== FileEditor: START _closeWindow =====');
+    print('FileEditor: Modified: $_isModified');
+    print('FileEditor: File: $_fileName');
+    
+    try {
+      // No WebView cleanup needed anymore - just close
+      _logToFile('Closing window immediately');
+      print('FileEditor: Closing window');
+      
+      await platform.invokeMethod('confirmClose');
+      
+    } catch (e, stack) {
+      _logToFile('ERROR in _closeWindow: $e');
+      _logToFile('Stack: $stack');
+      print('===== FileEditor: ERROR in _closeWindow =====');
+      print('FileEditor: Error: $e');
+      print('FileEditor: Stack: $stack');
     }
   }
 
   Future<void> _saveFile() async {
+    if (!mounted) return;
     setState(() => _isSaving = true);
 
     final fileService = FileService();
@@ -96,25 +165,26 @@ class _FileEditorWindowState extends State<FileEditorWindow> {
       _currentContent,
     );
 
+    if (!mounted) return;
     setState(() => _isSaving = false);
 
-    if (mounted) {
-      if (success) {
-        setState(() {
-          _isModified = false;
-          _content = _currentContent;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$_fileName saved successfully')),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to save $_fileName'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+    if (!mounted) return;
+
+    if (success) {
+      setState(() {
+        _isModified = false;
+        _content = _currentContent;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$_fileName saved successfully')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to save $_fileName'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -142,131 +212,73 @@ class _FileEditorWindowState extends State<FileEditorWindow> {
         themeMode: ThemeMode.dark,
         home: Scaffold(
           backgroundColor: const Color(0xFF1E1E1E),
-          body: Column(
-            children: [
-              // Custom dark title bar
-              Container(
-                height: 48,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF2D2D2D),
-                  border: Border(
-                    bottom: BorderSide(
-                      color: Color(0xFF3D3D3D),
-                      width: 1,
+          appBar: AppBar(
+            title: Row(
+              children: [
+                Icon(
+                  Icons.description,
+                  size: 20,
+                  color: Colors.blue[300],
+                ),
+                const SizedBox(width: 12),
+                Text(_fileName),
+                if (_isModified) ...[
+                  const SizedBox(width: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.orange,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      'Modified',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
-                ),
-                child: Row(
-                  children: [
-                    const SizedBox(width: 12),
-                    // File Icon
-                    Icon(
-                      Icons.description,
-                      size: 20,
-                      color: Colors.blue[300],
-                    ),
-                    const SizedBox(width: 12),
-                    // Title
-                    Expanded(
-                      child: Text(
-                        _fileName,
-                        style: TextStyle(
-                          color: Colors.grey[300],
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                    // Modified indicator
-                    if (_isModified)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        margin: const EdgeInsets.only(right: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.orange,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          'Modified',
-                          style: TextStyle(
-                            fontSize: 11,
+                ],
+              ],
+            ),
+            actions: [
+              if (_isModified)
+                IconButton(
+                  icon: _isSaving
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
                             color: Colors.white,
                           ),
-                        ),
-                      ),
-                    // Save button
-                    if (_isModified)
-                      IconButton(
-                        icon: _isSaving
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(Icons.save, size: 20),
-                        onPressed: _isSaving ? null : _saveFile,
-                        tooltip: 'Save',
-                        color: Colors.green[300],
-                      ),
-                    // Close button
-                    IconButton(
-                      icon: Icon(
-                        Icons.close,
-                        size: 20,
-                        color: Colors.grey[400],
-                      ),
-                      onPressed: () {
-                        if (_isModified) {
-                          _showUnsavedChangesDialog();
-                        } else {
-                          widget.controller.close();
-                        }
-                      },
-                      tooltip: 'Close',
-                      hoverColor: Colors.red.withOpacity(0.2),
-                    ),
-                    const SizedBox(width: 4),
-                  ],
+                        )
+                      : const Icon(Icons.save),
+                  onPressed: _isSaving ? null : _saveFile,
+                  tooltip: 'Save (Ctrl+S)',
                 ),
-              ),
-              // Editor content
-              Expanded(
-                child: MonacoEditor(
-                  initialContent: _content,
-                  language: _fileName.endsWith('.md') ? 'markdown' : 'plaintext',
-                  onChanged: _onContentChanged,
-                ),
-              ),
             ],
+          ),
+          body: Builder(
+            builder: (context) {
+              _logToFile('FileEditor: Building CodeEditor widget');
+              return CodeEditor(
+                controller: _controller,
+                wordWrap: true,
+                scrollController: CodeScrollController(
+                  verticalScroller: _verticalScroller,
+                  horizontalScroller: _horizontalScroller,
+                ),
+                style: const CodeEditorStyle(
+                  fontSize: 14.0,
+                  fontFamily: 'Consolas',
+                ),
+              );
+            },
           ),
         ),
       ),
     );
   }
 
-  void _showUnsavedChangesDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Unsaved Changes'),
-        content: const Text('You have unsaved changes. Discard them?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              widget.controller.close();
-            },
-            child: const Text('Discard'),
-          ),
-        ],
-      ),
-    );
-  }
 }

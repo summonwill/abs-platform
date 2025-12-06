@@ -26,8 +26,16 @@ class DebugLogger {
     if (_initialized) return;
 
     try {
-      final appDir = await getApplicationDocumentsDirectory();
-      final logsDir = Directory('${appDir.path}/abs_platform_logs');
+      Directory logsDir;
+      
+      try {
+        // Try to use Documents directory
+        final appDir = await getApplicationDocumentsDirectory();
+        logsDir = Directory('${appDir.path}/abs_platform_logs');
+      } catch (e) {
+        // Fallback to current directory if path_provider fails
+        logsDir = Directory('abs_platform_logs');
+      }
       
       // Create logs directory if it doesn't exist
       if (!await logsDir.exists()) {
@@ -48,6 +56,7 @@ class DebugLogger {
       await log('=== Debug Logger Initialized ===');
       await log('Timestamp: ${DateTime.now()}');
       await log('Platform: ${Platform.operatingSystem}');
+      await log('Log path: ${_logFile!.path}');
       await log('=====================================\n');
     } catch (e) {
       print('Failed to initialize debug logger: $e');

@@ -13,6 +13,7 @@
 ///   - project_provider: Project state management
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'dart:io';
 import 'dart:convert';
@@ -24,6 +25,7 @@ import '../providers/project_provider.dart';
 import '../models/project.dart';
 import '../services/file_service.dart';
 import '../services/debug_logger.dart';
+import '../widgets/monaco_editor.dart';
 
 /// Main project detail screen widget
 class ProjectDetailScreen extends ConsumerWidget {
@@ -484,17 +486,19 @@ class _FilesTab extends StatelessWidget {
       return;
     }
 
-    // Open file in separate window
-    final window = await DesktopMultiWindow.createWindow(jsonEncode({
+    // Open file in separate floating window with re_editor
+    final fileData = jsonEncode({
       'windowType': 'file_editor',
       'fileName': fileName,
       'projectPath': project.path,
       'content': content,
-    }));
-
+    });
+    
+    final window = await DesktopMultiWindow.createWindow(fileData);
     window
+      ..setTitle('$fileName - ${project.name}')
       ..setFrame(const Offset(100, 100) & const Size(1000, 700))
-      ..setTitle('Edit: $fileName')
+      ..center()
       ..show();
   }
 }
@@ -743,6 +747,147 @@ class _ExportDialog extends StatelessWidget {
           label: const Text('Copy All'),
         ),
       ],
+    );
+  }
+}
+
+/// File editor dialog with Monaco
+class _FileEditorDialog extends StatefulWidget {
+  final String fileName;
+  final String projectPath;
+  final String initialContent;
+
+  const _FileEditorDialog({
+    required this.fileName,
+    required this.projectPath,
+    required this.initialContent,
+  });
+
+  @override
+  State<_FileEditorDialog> createState() => _FileEditorDialogState();
+}
+
+class _FileEditorDialogState extends State<_FileEditorDialog> {
+  late String _currentContent;
+  bool _isModified = false;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentContent = widget.initialContent;
+  }
+
+  void _onContentChanged(String newContent) {
+    setState(() {
+      _currentContent = newContent;
+      _isModified = newContent != widget.initialContent;
+    });
+  }
+
+  Future<void> _save() async {
+    setState(() => _isSaving = true);
+    
+    final fileService = FileService();
+    final success = await fileService.writeGovernanceFile(
+      widget.projectPath,
+      widget.fileName,
+      _currentContent,
+    );
+
+    if (mounted) {
+      setState(() => _isSaving = false);
+      
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('File saved successfully')),
+        );
+        Navigator.of(context).pop();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to save file')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog.fullscreen(
+      child: Scaffold(
+        appBar: AppBar(
+          title: Row(
+            children: [
+              const Icon(Icons.description, size: 20),
+              const SizedBox(width: 12),
+              Text(widget.fileName),
+              if (_isModified) ...[
+                const SizedBox(width: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.orange,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'Modified',
+                    style: TextStyle(fontSize: 11, color: Colors.white),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            if (_isModified)
+              FilledButton.icon(
+                onPressed: _isSaving ? null : _save,
+                icon: _isSaving
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save),
+                label: const Text('Save'),
+              ),
+            const SizedBox(width: 8),
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () {
+                if (_isModified) {
+                  showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('Unsaved Changes'),
+                      content: const Text('Discard unsaved changes?'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text('Cancel'),
+                        ),
+                        FilledButton(
+                          onPressed: () {
+                            Navigator.pop(context);
+                            Navigator.pop(context);
+                          },
+                          child: const Text('Discard'),
+                        ),
+                      ],
+                    ),
+                  );
+                } else {
+                  Navigator.of(context).pop();
+                }
+              },
+            ),
+          ],
+        ),
+        body: MonacoEditor(
+          initialContent: widget.initialContent,
+          language: widget.fileName.endsWith('.md') ? 'markdown' : 'plaintext',
+          onChanged: _onContentChanged,
+        ),
+      ),
     );
   }
 }

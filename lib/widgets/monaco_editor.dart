@@ -13,11 +13,13 @@
 /// Performance: Handles files with 10,000+ lines smoothly
 /// 
 /// Last Modified: December 5, 2025
+library;
+
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:webview_windows/webview_windows.dart';
-import 'dart:convert';
-import '../services/debug_logger.dart';
 
 /// Monaco Editor widget with full editing capabilities
 /// 
@@ -36,55 +38,88 @@ class MonacoEditor extends StatefulWidget {
   });
 
   @override
-  State<MonacoEditor> createState() => _MonacoEditorState();
+  State<MonacoEditor> createState() => MonacoEditorState();
 }
 
-class _MonacoEditorState extends State<MonacoEditor> {
-  final _controller = WebviewController();
+class MonacoEditorState extends State<MonacoEditor> {
+  late final WebviewController _controller;
   bool _isReady = false;
+  bool _isDisposed = false;
+
+  MonacoEditorState() {
+    _controller = WebviewController();
+    _logToFile('Monaco: State created, controller initialized');
+  }
+
+  // Expose controller and disposed state for emergency cleanup
+  WebviewController get controller => _controller;
+  bool get isDisposed => _isDisposed;
+  bool get isReady => _isReady;
+  void markDisposed() => _isDisposed = true;
+
+  void _logToFile(String message) {
+    try {
+      final logFile = File('C:\\Users\\summo\\OneDrive\\Desktop\\crash_debug.log');
+      logFile.writeAsStringSync('${DateTime.now()}: MONACO: $message\n', mode: FileMode.append, flush: true);
+    } catch (e) {
+      // Ignore
+    }
+  }
 
   @override
   void initState() {
+    _logToFile('Monaco: initState called');
     super.initState();
     _initializeWebView();
   }
 
   Future<void> _initializeWebView() async {
+    _logToFile('Monaco: _initializeWebView START');
     try {
-      await DebugLogger.log('Monaco: Starting WebView initialization');
+      _logToFile('Monaco: Calling controller.initialize()');
       await _controller.initialize();
-      await DebugLogger.log('Monaco: WebView initialized successfully');
+      _logToFile('Monaco: Controller initialized successfully');
       
       // Listen for messages from Monaco
-      _controller.webMessage.listen((message) async {
-        await DebugLogger.log('Monaco: Received message: ${message.substring(0, message.length > 50 ? 50 : message.length)}...');
+      _logToFile('Monaco: Setting up webMessage listener');
+      _controller.webMessage.listen((message) {
+        _logToFile('Monaco: <<< Message received: "$message"');
         if (message == 'ready') {
-          await DebugLogger.log('Monaco: Editor ready, setting initial content');
+          _logToFile('Monaco: Processing READY signal');
           setState(() => _isReady = true);
+          _logToFile('Monaco: State set to ready');
           _setContent(widget.initialContent);
+          _logToFile('Monaco: Initial content sent');
         } else if (message.startsWith('content:')) {
+          _logToFile('Monaco: Content change received');
           final content = message.substring(8);
           widget.onChanged(content);
+        } else {
+          _logToFile('Monaco: Unknown message type: $message');
         }
-      }, onError: (error) async {
-        await DebugLogger.error('Monaco: WebMessage stream error', error);
       });
+      _logToFile('Monaco: webMessage listener registered');
 
       // Load Monaco Editor HTML
-      await DebugLogger.log('Monaco: Loading HTML content');
+      _logToFile('Monaco: About to load HTML content');
       await _controller.loadStringContent(_getMonacoHTML());
-      await DebugLogger.log('Monaco: HTML content loaded');
+      _logToFile('Monaco: HTML content loaded successfully');
     } catch (e, stackTrace) {
-      await DebugLogger.error('Monaco: WebView initialization failed', e, stackTrace);
+      _logToFile('Monaco: WebView initialization ERROR: $e');
+      _logToFile('Monaco: Stack trace: $stackTrace');
+      print('Monaco: WebView initialization failed: $e');
+      print('Stack trace: $stackTrace');
       // Try again after a short delay
       try {
-        await DebugLogger.log('Monaco: Retrying initialization after delay');
+        _logToFile('Monaco: Retrying after error');
         await Future.delayed(const Duration(milliseconds: 500));
         await _controller.initialize();
         await _controller.loadStringContent(_getMonacoHTML());
-        await DebugLogger.log('Monaco: Retry successful');
+        _logToFile('Monaco: Retry successful');
       } catch (retryError, retryStack) {
-        await DebugLogger.error('Monaco: Retry failed', retryError, retryStack);
+        _logToFile('Monaco: Retry FAILED: $retryError');
+        print('Monaco: Retry failed: $retryError');
+        print('Stack trace: $retryStack');
       }
     }
   }
@@ -141,10 +176,18 @@ class _MonacoEditorState extends State<MonacoEditor> {
             // Notify Flutter that editor is ready
             window.chrome.webview.postMessage('ready');
             
-            // Send content changes to Flutter
+            // Send content changes to Flutter (debounced to prevent crashes)
+            let debounceTimer;
             editor.onDidChangeModelContent(() => {
-                const content = editor.getValue();
-                window.chrome.webview.postMessage('content:' + content);
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
+                    try {
+                        const content = editor.getValue();
+                        window.chrome.webview.postMessage('content:' + content);
+                    } catch (error) {
+                        console.error('Failed to send content:', error);
+                    }
+                }, 300); // Wait 300ms after user stops typing
             });
         });
         
@@ -159,14 +202,90 @@ class _MonacoEditorState extends State<MonacoEditor> {
 ''';
   }
 
+  /// Explicitly dispose WebView before window closes
+  /// CRITICAL: Must be called BEFORE window closes to prevent crash
+  Future<void> disposeWebView() async {
+    _logToFile('=== START disposeWebView ===');
+    
+    if (_isDisposed) {
+      _logToFile('Already disposed, skipping');
+      print('Monaco: Already disposed, skipping');
+      return;
+    }
+    _isDisposed = true;
+    
+    try {
+      _logToFile('Setting _isDisposed = true');
+      print('===== Monaco: START disposeWebView =====');
+      print('Monaco: Controller hashCode: ${_controller.hashCode}');
+      
+      // Step 1: Suspend the WebView (graceful shutdown)
+      _logToFile('About to call suspend()');
+      print('Monaco: Calling suspend...');
+      await _controller.suspend();
+      
+      _logToFile('suspend() completed');
+      print('Monaco: Suspend completed');
+      
+      // Step 2: Wait briefly for suspend to complete
+      _logToFile('Waiting 50ms');
+      await Future.delayed(const Duration(milliseconds: 50));
+      _logToFile('50ms wait done');
+      
+      // Step 3: DISPOSE CONTROLLER HERE (not in dispose()!)
+      // This must happen while widget is still valid
+      _logToFile('About to call controller.dispose()');
+      print('Monaco: Calling controller.dispose()...');
+      
+      _controller.dispose();
+      
+      _logToFile('controller.dispose() returned');
+      print('Monaco: Controller disposed');
+      
+      // Step 4: Wait for native cleanup
+      _logToFile('Waiting 100ms for native cleanup');
+      await Future.delayed(const Duration(milliseconds: 100));
+      _logToFile('100ms wait done');
+      
+      _logToFile('=== END disposeWebView SUCCESS ===');
+      print('===== Monaco: END disposeWebView (SUCCESS) =====');
+    } catch (e, stack) {
+      _logToFile('ERROR: $e');
+      _logToFile('Stack: $stack');
+      print('===== Monaco: ERROR during WebView disposal =====');
+      print('Monaco: Error: $e');
+      print('Monaco: Stack: $stack');
+      print('===== Monaco: END disposeWebView (ERROR) =====');
+    }
+  }
+
   @override
   void dispose() {
-    _controller.dispose();
+    print('===== Monaco: Flutter dispose() called =====');
+    print('Monaco: _isDisposed = $_isDisposed');
+    
+    // Controller should already be disposed in disposeWebView()
+    // Only dispose here as fallback if disposeWebView() wasn't called
+    if (!_isDisposed) {
+      print('Monaco: WARNING - dispose() called without disposeWebView()!');
+      print('Monaco: Disposing controller as fallback');
+      try {
+        _controller.dispose();
+        print('Monaco: Fallback disposal successful');
+      } catch (e) {
+        print('Monaco: Fallback disposal error: $e');
+      }
+    } else {
+      print('Monaco: Controller already disposed, skipping');
+    }
+    
     super.dispose();
+    print('===== Monaco: Flutter dispose() END =====');
   }
 
   @override
   Widget build(BuildContext context) {
+    _logToFile('Monaco: build() called, _isReady=$_isReady, _isDisposed=$_isDisposed');
     return Stack(
       children: [
         Webview(_controller),
