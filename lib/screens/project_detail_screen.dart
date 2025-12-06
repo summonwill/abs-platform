@@ -22,6 +22,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import '../providers/project_provider.dart';
+import '../providers/ai_provider.dart';
 import '../models/project.dart';
 import '../services/file_service.dart';
 import '../services/debug_logger.dart';
@@ -58,7 +59,7 @@ class ProjectDetailScreen extends ConsumerWidget {
           ),
           IconButton(
             icon: const Icon(Icons.chat),
-            onPressed: () => _showAIChatWindow(context, project),
+            onPressed: () => _showAIChatWindow(context, project, ref),
             tooltip: 'AI Assistant',
           ),
           IconButton(
@@ -98,7 +99,7 @@ class ProjectDetailScreen extends ConsumerWidget {
         ],
         ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAIChatWindow(context, project),
+        onPressed: () => _showAIChatWindow(context, project, ref),
         icon: const Icon(Icons.chat_bubble),
         label: const Text('Chat with AI'),
         tooltip: 'Open AI Assistant',
@@ -106,10 +107,21 @@ class ProjectDetailScreen extends ConsumerWidget {
     );
   }
 
-  void _showAIChatWindow(BuildContext context, Project project) async {
-    // Create a new window with project data
-    final projectJson = jsonEncode(project.toJson());
-    final window = await DesktopMultiWindow.createWindow(projectJson);
+  void _showAIChatWindow(BuildContext context, Project project, WidgetRef ref) async {
+    // Get API keys to pass to separate window (separate windows can't access Hive)
+    final aiKeys = ref.read(aiKeysProvider);
+    
+    // Create window arguments with project data AND API keys
+    final windowArgs = {
+      ...project.toJson(),
+      'apiKeys': {
+        'openai': aiKeys.openAI,
+        'anthropic': aiKeys.anthropic,
+        'gemini': aiKeys.gemini,
+      },
+    };
+    
+    final window = await DesktopMultiWindow.createWindow(jsonEncode(windowArgs));
     
     window
       ..setTitle('AI Assistant - ${project.name}')

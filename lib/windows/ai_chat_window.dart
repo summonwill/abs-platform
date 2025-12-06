@@ -2,28 +2,29 @@
 /// 
 /// Purpose: Entry point for separate AI chat windows spawned via desktop_multi_window
 /// Key Components:
-///   - Window initialization and Hive setup
+///   - Window initialization (no Hive - API keys passed via arguments)
 ///   - Custom dark title bar (matches app theme)
 ///   - AIChatScreen integration in isolated window process
 ///   - Project data reconstruction from JSON arguments
 /// 
 /// Dependencies:
 ///   - desktop_multi_window: Multi-window infrastructure
-///   - hive_flutter: Storage access in separate window
 ///   - ai_chat_screen: Chat UI component
 /// 
-/// Last Modified: December 5, 2025
+/// Last Modified: December 6, 2025
+library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 import '../screens/ai_chat_screen.dart';
 import '../models/project.dart';
+import '../providers/ai_provider.dart';
 
 /// Separate window for AI chat
 /// 
-/// StatefulWidget to handle async Hive initialization before rendering
+/// Receives project data and API keys via window arguments
+/// (Hive is locked by main window process, so keys must be passed explicitly)
 class AIChatWindow extends StatefulWidget {
   final WindowController controller;
   final Map<String, dynamic> args;
@@ -39,34 +40,32 @@ class AIChatWindow extends StatefulWidget {
 }
 
 class _AIChatWindowState extends State<AIChatWindow> {
-  bool _isInitialized = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initialize();
-  }
-
-  Future<void> _initialize() async {
-    // Initialize Hive for this window to access API keys
-    await Hive.initFlutter();
-    setState(() => _isInitialized = true);
-  }
-
   @override
   Widget build(BuildContext context) {
-    if (!_isInitialized) {
-      return const MaterialApp(
-        home: Scaffold(
-          body: Center(child: CircularProgressIndicator()),
-        ),
-      );
-    }
-
-    // Reconstruct project from args
-    final project = Project.fromJson(Map<String, dynamic>.from(widget.args));
+    // Extract API keys from arguments (passed from main window)
+    final apiKeysData = widget.args['apiKeys'] as Map<String, dynamic>?;
+    final apiKeys = AIKeys(
+      openAI: apiKeysData?['openai'] as String?,
+      anthropic: apiKeysData?['anthropic'] as String?,
+      gemini: apiKeysData?['gemini'] as String?,
+    );
+    
+    // Reconstruct project from args (excluding apiKeys)
+    final projectData = Map<String, dynamic>.from(widget.args)..remove('apiKeys');
+    final project = Project.fromJson(projectData);
 
     return ProviderScope(
+      overrides: [
+        // Override aiKeysProvider state with keys passed from main window
+        aiKeysProvider.overrideWith((ref) {
+          final notifier = AIKeysNotifier();
+          // Set the state directly after a short delay to allow initialization
+          Future.microtask(() {
+            notifier.setKeysDirectly(apiKeys);
+          });
+          return notifier;
+        }),
+      ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         theme: ThemeData(

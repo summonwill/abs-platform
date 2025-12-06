@@ -15,6 +15,7 @@
 /// Last Modified: December 5, 2025
 library;
 
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive/hive.dart';
@@ -57,17 +58,37 @@ class ProjectsNotifier extends StateNotifier<List<Project>> {
   Future<void> _loadProjects() async {
     if (_box == null) return;
 
-    final projectsJson = _box!.values.toList();
-    state = projectsJson
-        .map((json) => Project.fromJson(
-              Map<String, dynamic>.from(
-                Map<String, dynamic>.from(
-                  // Parse JSON string to Map
-                  {},
-                ),
-              ),
-            ))
-        .toList();
+    final projects = <Project>[];
+    for (var entry in _box!.toMap().entries) {
+      try {
+        // Parse JSON string to Map
+        final jsonStr = entry.value;
+        if (jsonStr.isNotEmpty) {
+          // Try to parse as JSON
+          final Map<String, dynamic> jsonMap = Map<String, dynamic>.from(
+            jsonStr.startsWith('{') 
+              ? (await _parseJson(jsonStr)) ?? {}
+              : {},
+          );
+          if (jsonMap.isNotEmpty) {
+            projects.add(Project.fromJson(jsonMap));
+          }
+        }
+      } catch (e) {
+        print('Error loading project: $e');
+      }
+    }
+    state = projects;
+  }
+
+  Future<Map<String, dynamic>?> _parseJson(String jsonStr) async {
+    try {
+      return Map<String, dynamic>.from(
+        json.decode(jsonStr) as Map,
+      );
+    } catch (e) {
+      return null;
+    }
   }
 
   Future<void> _saveProjects() async {
@@ -75,7 +96,7 @@ class ProjectsNotifier extends StateNotifier<List<Project>> {
 
     await _box!.clear();
     for (var project in state) {
-      await _box!.put(project.id, project.toJson().toString());
+      await _box!.put(project.id, json.encode(project.toJson()));
     }
   }
 

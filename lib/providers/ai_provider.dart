@@ -36,6 +36,11 @@ class AIKeysNotifier extends StateNotifier<AIKeys> {
   AIKeysNotifier() : super(AIKeys()) {
     _init();
   }
+  
+  /// Set keys directly without Hive (used by separate windows)
+  void setKeysDirectly(AIKeys keys) {
+    state = keys;
+  }
 
   Future<void> _init() async {
     _box = await Hive.openBox<String>('ai_keys');
