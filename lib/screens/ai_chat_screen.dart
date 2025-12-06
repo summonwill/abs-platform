@@ -14,6 +14,7 @@
 ///   - project_provider: Project and session state
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -235,10 +236,6 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
     final models = availableModels[selectedProvider] ?? [];
     
     return PopupMenuButton<String>(
-      child: Chip(
-        avatar: const Icon(Icons.tune, size: 18),
-        label: Text(_getModelDisplayName(currentModel)),
-      ),
       tooltip: 'Select model',
       onSelected: (model) {
         final updatedModels = {...selectedModels};
@@ -260,6 +257,10 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
           ),
         );
       }).toList(),
+      child: Chip(
+        avatar: const Icon(Icons.tune, size: 18),
+        label: Text(_getModelDisplayName(currentModel)),
+      ),
     );
   }
   
@@ -560,10 +561,24 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
         gemini: aiKeys.gemini,
       );
 
-      // Get project context
-      final projectContext = await ref
-          .read(projectsProvider.notifier)
-          .exportForAI(widget.project.id);
+      // Get project context with file tree
+      // Note: In separate windows, we need to read files directly since Hive is locked by main window
+      final fileService = ref.read(fileServiceProvider);
+      final fullProjectData = await fileService.exportFullProjectForAI(widget.project.path);
+      
+      final projectContext = fullProjectData['governanceFiles'] as Map<String, String>? ?? {};
+      final fileTree = fullProjectData['fileTree'] as List<String>? ?? [];
+
+      // DEBUG: Check what we're sending
+      print("DEBUG Project Context:");
+      print("  Project Path: ${widget.project.path}");
+      print("  Governance Files: ${projectContext.keys.toList()}");
+      print("  File Tree Count: ${fileTree.length}");
+      if (projectContext.containsKey('TODO.md')) {
+        print("  TODO.md preview: ${projectContext['TODO.md']?.substring(0, 100)}...");
+      } else {
+        print("  WARNING: TODO.md not found in context!");
+      }
 
       // Build conversation history
       final history = _messages
@@ -580,6 +595,7 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
       print("  Provider: $selectedProvider");
       print("  Selected Model: $selectedModel");
       print("  Full Map: ${ref.read(selectedModelProvider)}");
+      print("  File Tree Count: ${fileTree.length}");
 
       // Send to AI
       final response = await aiService.sendMessage(
@@ -588,6 +604,7 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
         message: message,
         conversationHistory: history,
         projectContext: projectContext,
+        fileTree: fileTree,
       );
 
       // Parse file updates

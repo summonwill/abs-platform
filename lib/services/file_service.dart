@@ -12,6 +12,7 @@
 ///   - file_picker: Native file/folder selection dialogs
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
@@ -72,7 +73,7 @@ class FileService {
   /// Returns: File contents as string, or null if file doesn't exist or error occurs
   Future<String?> readGovernanceFile(String projectPath, String fileName) async {
     try {
-      final file = File('$projectPath/$fileName');
+      final file = File('$projectPath${Platform.pathSeparator}$fileName');
       if (await file.exists()) {
         return await file.readAsString();
       }
@@ -99,7 +100,7 @@ class FileService {
     String content,
   ) async {
     try {
-      final file = File('$projectPath/$fileName');
+      final file = File('$projectPath${Platform.pathSeparator}$fileName');
       await file.writeAsString(content);
       return true;
     } catch (e) {
@@ -127,7 +128,7 @@ class FileService {
     ];
 
     for (final fileName in governanceFiles) {
-      final file = File('$projectPath/$fileName');
+      final file = File('$projectPath${Platform.pathSeparator}$fileName');
       if (await file.exists()) {
         files.add(fileName);
       }
@@ -174,6 +175,54 @@ class FileService {
     }
   }
 
+  /// Get list of all files in project directory (for AI context)
+  Future<List<String>> getProjectFileList(String projectPath) async {
+    final projectDir = Directory(projectPath);
+    if (!await projectDir.exists()) return [];
+
+    final files = <String>[];
+    final excludedDirs = {'.git', 'node_modules', '.dart_tool', 'build', '.idea', '.vscode'};
+    final excludedExtensions = {'.exe', '.dll', '.so', '.dylib', '.jar', '.zip', '.png', '.jpg', '.jpeg', '.gif'};
+
+    await for (final entity in projectDir.list(recursive: true)) {
+      if (entity is File) {
+        final relativePath = entity.path.replaceFirst('$projectPath${Platform.pathSeparator}', '');
+        
+        // Skip excluded directories
+        if (excludedDirs.any((dir) => relativePath.contains('${Platform.pathSeparator}$dir${Platform.pathSeparator}') || relativePath.startsWith('$dir${Platform.pathSeparator}'))) {
+          continue;
+        }
+        
+        // Skip excluded file extensions
+        if (excludedExtensions.any((ext) => relativePath.toLowerCase().endsWith(ext))) {
+          continue;
+        }
+        
+        files.add(relativePath);
+      }
+    }
+
+    return files..sort();
+  }
+
+  /// Read any file in the project (not just governance files)
+  Future<String?> readProjectFile(String projectPath, String relativePath) async {
+    try {
+      final file = File('$projectPath${Platform.pathSeparator}$relativePath');
+      if (!await file.exists()) return null;
+      
+      // Check file size to avoid loading huge files
+      final size = await file.length();
+      if (size > 1024 * 1024) { // 1MB limit
+        return '[File too large: ${(size / 1024).toStringAsFixed(1)} KB]';
+      }
+      
+      return await file.readAsString();
+    } catch (e) {
+      return '[Error reading file: $e]';
+    }
+  }
+
   /// Export governance files as a package for AI conversation
   Future<Map<String, String>> exportForAI(String projectPath) async {
     final files = <String, String>{};
@@ -192,6 +241,18 @@ class FileService {
     }
 
     return files;
+  }
+
+  /// Export full project context including file tree (for AI)
+  Future<Map<String, dynamic>> exportFullProjectForAI(String projectPath) async {
+    final governanceFiles = await exportForAI(projectPath);
+    final fileList = await getProjectFileList(projectPath);
+    
+    return {
+      'governanceFiles': governanceFiles,
+      'fileTree': fileList,
+      'projectPath': projectPath,
+    };
   }
 
   // Template methods

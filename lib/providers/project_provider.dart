@@ -13,6 +13,7 @@
 ///   - file_service: File system operations
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,7 +63,7 @@ class ProjectsNotifier extends StateNotifier<List<Project>> {
               Map<String, dynamic>.from(
                 Map<String, dynamic>.from(
                   // Parse JSON string to Map
-                  {} as Map,
+                  {},
                 ),
               ),
             ))
@@ -194,6 +195,13 @@ class ProjectsNotifier extends StateNotifier<List<Project>> {
     return await _fileService.exportForAI(project.path);
   }
 
+  Future<Map<String, dynamic>> exportFullProjectForAI(String projectId) async {
+    final project = getProject(projectId);
+    if (project == null) return {};
+
+    return await _fileService.exportFullProjectForAI(project.path);
+  }
+
   Future<void> createSession(String projectId, String title) async {
     final project = getProject(projectId);
     if (project == null) return;
@@ -239,7 +247,7 @@ class ProjectsNotifier extends StateNotifier<List<Project>> {
     final sessionNumber = project.sessions.length;
     final newEntry = '''
 
-## Session $sessionNumber: ${date} - ${session.title}
+## Session $sessionNumber: $date - ${session.title}
 
 ### Objectives
 - ${session.title}

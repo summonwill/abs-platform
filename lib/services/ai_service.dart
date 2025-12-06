@@ -11,6 +11,7 @@
 ///   - dio: HTTP client for API requests
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'package:dio/dio.dart';
 import 'dart:convert';
@@ -49,6 +50,7 @@ class AIService {
   ///   - message: User message to send
   ///   - conversationHistory: Previous messages in conversation
   ///   - projectContext: Governance files content for context injection
+  ///   - fileTree: List of all files in project (optional)
   /// 
   /// Returns: AI response text
   /// 
@@ -59,14 +61,15 @@ class AIService {
     required String message,
     required List<Map<String, String>> conversationHistory,
     required Map<String, String> projectContext,
+    List<String>? fileTree,
   }) async {
     switch (provider) {
       case AIProvider.openai:
-        return await _sendToOpenAI(model ?? 'gpt-4o-mini', message, conversationHistory, projectContext);
+        return await _sendToOpenAI(model ?? 'gpt-4o-mini', message, conversationHistory, projectContext, fileTree);
       case AIProvider.anthropic:
-        return await _sendToAnthropic(model ?? 'claude-3-5-sonnet-20241022', message, conversationHistory, projectContext);
+        return await _sendToAnthropic(model ?? 'claude-3-5-sonnet-20241022', message, conversationHistory, projectContext, fileTree);
       case AIProvider.gemini:
-        return await _sendToGemini(model ?? 'gemini-2.0-flash-exp', message, conversationHistory, projectContext);
+        return await _sendToGemini(model ?? 'gemini-2.0-flash-exp', message, conversationHistory, projectContext, fileTree);
     }
   }
 
@@ -75,20 +78,31 @@ class AIService {
     String message,
     List<Map<String, String>> history,
     Map<String, String> context,
+    List<String>? fileTree,
   ) async {
     if (_openAIKey == null || _openAIKey!.isEmpty) {
       throw Exception('OpenAI API key not configured');
     }
 
-    // Build context message from governance files
-    final contextMessage = _buildContextMessage(context);
+    // Build context message from governance files and file tree
+    final contextMessage = _buildContextMessage(context, fileTree: fileTree);
+    
+    // DEBUG: Log what we're sending
+    print('DEBUG _sendToOpenAI:');
+    print('  Context keys: ${context.keys.toList()}');
+    print('  FileTree count: ${fileTree?.length ?? 0}');
+    print('  Context message length: ${contextMessage.length}');
+    if (context.containsKey('TODO.md')) {
+      print('  TODO.md first 100 chars: ${context['TODO.md']?.substring(0, 100)}');
+    }
 
     final messages = [
       {
         'role': 'system',
         'content': 'You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
-            'The user has provided their project governance files. Help them manage their project, update TODO items, '
-            'and maintain session notes. When updating files, use clear markdown sections.'
+            'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
+            'maintain session notes, and work with any project files. When updating files, use clear markdown sections. '
+            'If asked about specific files you haven\'t seen yet, ask the user if they\'d like you to read them.'
       },
       if (contextMessage.isNotEmpty) {
         'role': 'system',
@@ -132,12 +146,13 @@ class AIService {
     String message,
     List<Map<String, String>> history,
     Map<String, String> context,
+    List<String>? fileTree,
   ) async {
     if (_anthropicKey == null || _anthropicKey!.isEmpty) {
       throw Exception('Anthropic API key not configured');
     }
 
-    final contextMessage = _buildContextMessage(context);
+    final contextMessage = _buildContextMessage(context, fileTree: fileTree);
 
     final messages = [
       ...history,
@@ -175,12 +190,13 @@ class AIService {
     String message,
     List<Map<String, String>> history,
     Map<String, String> context,
+    List<String>? fileTree,
   ) async {
     if (_geminiKey == null || _geminiKey!.isEmpty) {
       throw Exception('Gemini API key not configured');
     }
 
-    final contextMessage = _buildContextMessage(context);
+    final contextMessage = _buildContextMessage(context, fileTree: fileTree);
 
     final contents = [
       {
@@ -223,15 +239,32 @@ class AIService {
     }
   }
 
-  String _buildContextMessage(Map<String, String> context) {
-    if (context.isEmpty) return '';
+  String _buildContextMessage(Map<String, String> context, {List<String>? fileTree}) {
+    if (context.isEmpty && (fileTree == null || fileTree.isEmpty)) return '';
 
-    final buffer = StringBuffer('Project Governance Files:\n\n');
+    final buffer = StringBuffer();
     
-    for (var entry in context.entries) {
-      buffer.writeln('=== ${entry.key} ===');
-      buffer.writeln(entry.value);
+    // Add file tree if available
+    if (fileTree != null && fileTree.isNotEmpty) {
+      buffer.writeln('Project File Structure:');
+      buffer.writeln('```');
+      for (final file in fileTree) {
+        buffer.writeln(file);
+      }
+      buffer.writeln('```');
+      buffer.writeln('\nNote: You can ask me to read any of these files if you need to see their contents.');
       buffer.writeln('\n---\n');
+    }
+    
+    // Add governance files
+    if (context.isNotEmpty) {
+      buffer.writeln('Project Governance Files:\n');
+      
+      for (var entry in context.entries) {
+        buffer.writeln('=== ${entry.key} ===');
+        buffer.writeln(entry.value);
+        buffer.writeln('\n---\n');
+      }
     }
 
     return buffer.toString();
