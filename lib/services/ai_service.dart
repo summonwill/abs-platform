@@ -315,8 +315,9 @@ class AIService {
     final updates = <String, String>{};
     
     // Pattern for new format: === OPERATION: filepath ===
+    // More flexible - can appear anywhere in the response
     final operationPattern = RegExp(
-      r'===\s*(CREATE|UPDATE|DELETE):\s*([^\s][^\n]*?)\s*===\s*\n([\s\S]*?)(?=\n===|\Z)',
+      r'===\s*(CREATE|UPDATE|DELETE):\s*([^\n]+?)\s*===\s*\n([\s\S]*?)(?=\n===|---|\Z)',
       caseSensitive: false,
       multiLine: true,
     );

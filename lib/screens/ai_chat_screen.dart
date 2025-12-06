@@ -609,6 +609,17 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
 
       // Parse file updates
       final updates = aiService.parseFileUpdates(response);
+      
+      // DEBUG: Log what was parsed
+      print('DEBUG File Operations Parsed:');
+      print('  Response length: ${response.length}');
+      print('  Updates found: ${updates.length}');
+      if (updates.isNotEmpty) {
+        print('  Operations:');
+        for (var entry in updates.entries) {
+          print('    - ${entry.key}: ${entry.value.length} chars');
+        }
+      }
 
       // Apply updates to files
       if (updates.isNotEmpty) {
