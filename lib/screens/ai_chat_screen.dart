@@ -612,23 +612,87 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
 
       // Apply updates to files
       if (updates.isNotEmpty) {
+        final fileService = ref.read(fileServiceProvider);
+        final appliedUpdates = <String, String>{};
+        
         for (var entry in updates.entries) {
-          await ref.read(fileServiceProvider).writeGovernanceFile(
-                widget.project.path,
-                entry.key,
-                entry.value,
+          final key = entry.key;
+          final content = entry.value;
+          
+          // Check if this is a file operation (CREATE/UPDATE/DELETE) or legacy governance file
+          if (key.contains(':')) {
+            // New format: "OPERATION:filepath"
+            final parts = key.split(':');
+            final operation = parts[0];
+            final filepath = parts.sublist(1).join(':'); // Handle paths with colons
+            
+            bool success = false;
+            switch (operation) {
+              case 'CREATE':
+              case 'UPDATE':
+                success = await fileService.writeProjectFile(
+                  widget.project.path,
+                  filepath,
+                  content,
+                );
+                if (success) {
+                  appliedUpdates[filepath] = content;
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('${operation == 'CREATE' ? 'Created' : 'Updated'}: $filepath')),
+                    );
+                  }
+                }
+                break;
+              case 'DELETE':
+                success = await fileService.deleteProjectFile(
+                  widget.project.path,
+                  filepath,
+                );
+                if (success) {
+                  appliedUpdates[filepath] = '[DELETED]';
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Deleted: $filepath')),
+                    );
+                  }
+                }
+                break;
+            }
+            
+            if (!success && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Failed to $operation: $filepath')),
               );
+            }
+          } else {
+            // Legacy format: governance file update
+            await fileService.writeGovernanceFile(
+              widget.project.path,
+              key,
+              content,
+            );
+            appliedUpdates[key] = content;
+          }
         }
+        
+        setState(() {
+          _messages.add(ChatMessage(
+            content: response,
+            isUser: false,
+            fileUpdates: appliedUpdates,
+          ));
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _messages.add(ChatMessage(
+            content: response,
+            isUser: false,
+          ));
+          _isLoading = false;
+        });
       }
-
-      setState(() {
-        _messages.add(ChatMessage(
-          content: response,
-          isUser: false,
-          fileUpdates: updates,
-        ));
-        _isLoading = false;
-      });
 
       _scrollToBottom();
       

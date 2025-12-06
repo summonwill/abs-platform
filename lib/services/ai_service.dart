@@ -101,7 +101,17 @@ class AIService {
         'role': 'system',
         'content': 'You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
             'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
-            'maintain session notes, and work with any project files. When updating files, use clear markdown sections. '
+            'maintain session notes, and work with any project files.\n\n'
+            'FILE OPERATIONS: You can create, update, or delete any project file using this format:\n'
+            '=== CREATE: path/to/file.ext ===\n'
+            'file content here\n'
+            '\n'
+            '=== UPDATE: path/to/existing.ext ===\n'
+            'updated content\n'
+            '\n'
+            '=== DELETE: path/to/file.ext ===\n'
+            '\n'
+            'For governance files (TODO.md, SESSION_NOTES.md, etc), you can use the legacy format: === FILENAME.md ===\n\n'
             'If asked about specific files you haven\'t seen yet, ask the user if they\'d like you to read them.'
       },
       if (contextMessage.isNotEmpty) {
@@ -173,8 +183,19 @@ class AIService {
           'model': model,
           'max_tokens': 4096,
           'system': 'You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
-              'The user has provided their project governance files. Help them manage their project, update TODO items, '
-              'and maintain session notes. When updating files, use clear markdown sections.\n\n$contextMessage',
+              'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
+              'maintain session notes, and work with any project files.\n\n'
+              'FILE OPERATIONS: You can create, update, or delete any project file using this format:\n'
+              '=== CREATE: path/to/file.ext ===\n'
+              'file content here\n'
+              '\n'
+              '=== UPDATE: path/to/existing.ext ===\n'
+              'updated content\n'
+              '\n'
+              '=== DELETE: path/to/file.ext ===\n'
+              '\n'
+              'For governance files (TODO.md, SESSION_NOTES.md, etc), you can use the legacy format: === FILENAME.md ===\n\n'
+              'If asked about specific files you haven\'t seen yet, ask the user if they\'d like you to read them.\n\n$contextMessage',
           'messages': messages,
         },
       );
@@ -204,8 +225,19 @@ class AIService {
         'parts': [
           {
             'text': 'System: You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
-                'The user has provided their project governance files. Help them manage their project, update TODO items, '
-                'and maintain session notes. When updating files, use clear markdown sections.\n\n$contextMessage'
+                'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
+                'maintain session notes, and work with any project files.\n\n'
+                'FILE OPERATIONS: You can create, update, or delete any project file using this format:\n'
+                '=== CREATE: path/to/file.ext ===\n'
+                'file content here\n'
+                '\n'
+                '=== UPDATE: path/to/existing.ext ===\n'
+                'updated content\n'
+                '\n'
+                '=== DELETE: path/to/file.ext ===\n'
+                '\n'
+                'For governance files (TODO.md, SESSION_NOTES.md, etc), you can use the legacy format: === FILENAME.md ===\n\n'
+                'If asked about specific files you haven\'t seen yet, ask the user if they\'d like you to read them.\n\n$contextMessage'
           }
         ]
       },
@@ -270,11 +302,35 @@ class AIService {
     return buffer.toString();
   }
 
+  /// Parse file operations from AI response
+  /// 
+  /// Supports multiple operation types:
+  /// - CREATE: === CREATE: path/to/file.ext ===
+  /// - UPDATE: === UPDATE: path/to/file.ext ===
+  /// - DELETE: === DELETE: path/to/file.ext ===
+  /// - Legacy governance file format: === FILENAME.md ===
+  /// 
+  /// Returns: Map of operations { 'operation:path': content or '' }
   Map<String, String> parseFileUpdates(String aiResponse) {
     final updates = <String, String>{};
     
-    // Pattern to match file updates in AI response
-    // Looking for: === FILENAME === followed by content
+    // Pattern for new format: === OPERATION: filepath ===
+    final operationPattern = RegExp(
+      r'===\s*(CREATE|UPDATE|DELETE):\s*([^\s][^\n]*?)\s*===\s*\n([\s\S]*?)(?=\n===|\Z)',
+      caseSensitive: false,
+      multiLine: true,
+    );
+    
+    final operationMatches = operationPattern.allMatches(aiResponse);
+    for (var match in operationMatches) {
+      final operation = match.group(1)!.toUpperCase();
+      final filepath = match.group(2)!.trim();
+      final content = match.group(3)?.trim() ?? '';
+      updates['$operation:$filepath'] = content;
+    }
+    
+    // Pattern to match legacy governance file format
+    // Looking for: === FILENAME.md === followed by content
     final filePattern = RegExp(
       r'===\s*([A-Z_]+\.md)\s*===\s*\n([\s\S]*?)(?=\n===|\Z)',
       caseSensitive: false,

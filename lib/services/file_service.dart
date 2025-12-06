@@ -223,6 +223,55 @@ class FileService {
     }
   }
 
+  /// Write or create any project file
+  /// 
+  /// Parameters:
+  ///   - projectPath: Root path of the project
+  ///   - relativePath: Relative path to file (e.g., 'src/main.dart', 'lib/models/user.dart')
+  ///   - content: Content to write
+  /// 
+  /// Returns: true if successful, false otherwise
+  /// 
+  /// Side Effects: Creates parent directories if they don't exist
+  Future<bool> writeProjectFile(String projectPath, String relativePath, String content) async {
+    try {
+      final file = File('$projectPath${Platform.pathSeparator}$relativePath');
+      
+      // Create parent directory if it doesn't exist
+      final parentDir = file.parent;
+      if (!await parentDir.exists()) {
+        await parentDir.create(recursive: true);
+      }
+      
+      await file.writeAsString(content);
+      return true;
+    } catch (e) {
+      print('Error writing file $relativePath: $e');
+      return false;
+    }
+  }
+
+  /// Delete a project file
+  /// 
+  /// Parameters:
+  ///   - projectPath: Root path of the project
+  ///   - relativePath: Relative path to file
+  /// 
+  /// Returns: true if successful, false otherwise
+  Future<bool> deleteProjectFile(String projectPath, String relativePath) async {
+    try {
+      final file = File('$projectPath${Platform.pathSeparator}$relativePath');
+      if (await file.exists()) {
+        await file.delete();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      print('Error deleting file $relativePath: $e');
+      return false;
+    }
+  }
+
   /// Export governance files as a package for AI conversation
   Future<Map<String, String>> exportForAI(String projectPath) async {
     final files = <String, String>{};
