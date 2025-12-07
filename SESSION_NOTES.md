@@ -1,5 +1,69 @@
 # Session Notes - ABS Platform
 
+## Session 6: December 7, 2025 - Session Timing & Heartbeat Improvements ✅
+
+### Objectives
+- Fix session duration timing bugs (negative duration, timestamp jump to 11h+)
+- Implement accumulated duration tracking across session reopens
+- Improve heartbeat detection speed and reliability
+- Prevent opening sessions while another is still active
+
+### Work Completed
+
+#### 1. Session Duration Timing Fixes ✅
+- **Problem 1**: Reopening completed sessions showed -1s or jumped to 11+ hours
+- **Root Cause**: `copyWith(endedAt: null)` didn't work due to `??` operator
+- **Solution**: Added `clearEndedAt` boolean parameter to `copyWith()` method
+- **Location**: `lib/models/project.dart`
+
+- **Problem 2**: Brief negative durations when reactivating sessions
+- **Solution**: Added protection in `duration` getter to return `accumulatedDuration` if current period is negative
+
+#### 2. Accumulated Duration Tracking ✅
+- **New Field**: `accumulatedDuration` (Duration) stores total time from previous session periods
+- **On Reactivate**: Previous duration added to `accumulatedDuration`, then `startedAt` reset
+- **Display**: Duration shows `accumulatedDuration + current period` for running sessions
+- **Location**: `lib/models/project.dart`, `lib/providers/project_provider.dart`
+
+#### 3. Heartbeat Speed Improvements ✅
+- **Before**: Write 1s, stale 4s, check 2s (up to 6s detection time)
+- **After**: Write 500ms, stale 1s, check 1s (under 2s detection time)
+- **Location**: `lib/screens/ai_chat_screen.dart`, `lib/screens/project_detail_screen.dart`
+
+#### 4. Pre-Session Heartbeat Check ✅
+- **New**: `HeartbeatStatus` enum (noHeartbeat, cleanedUp, activeWindow)
+- **New**: `_checkAndCleanupHeartbeat()` function checks before opening/creating sessions
+- **Behavior**: If another window is active, shows "A session is already active, please wait for session to close"
+- **Behavior**: If heartbeat is stale, cleans it up and proceeds
+- **Location**: `lib/screens/project_detail_screen.dart`
+
+### Files Modified
+- `lib/models/project.dart` - `clearEndedAt` param, negative duration protection, `accumulatedDuration` field
+- `lib/providers/project_provider.dart` - Updated `activateSession()` to use `clearEndedAt: true`
+- `lib/screens/ai_chat_screen.dart` - Heartbeat write interval reduced to 500ms
+- `lib/screens/project_detail_screen.dart` - HeartbeatStatus enum, pre-session heartbeat check, faster timing
+
+### Technical Details
+
+**Updated Heartbeat Timing:**
+| Setting | Before | After |
+|---------|--------|-------|
+| Heartbeat write interval | 1 second | 500ms |
+| Stale threshold | 4 seconds | 1 second |
+| Check interval | 2 seconds | 1 second |
+| Max detection time | ~6 seconds | ~2 seconds |
+
+**HeartbeatStatus Enum:**
+```dart
+enum HeartbeatStatus {
+  noHeartbeat,    // No heartbeat file exists
+  cleanedUp,      // Found stale heartbeat, cleaned it up
+  activeWindow,   // Another window is actively running
+}
+```
+
+---
+
 ## Session 5: December 6, 2025 (Evening) - Session Auto-Stop Feature ✅
 
 ### Objectives
@@ -38,13 +102,13 @@
 
 ### Technical Details
 
-**Heartbeat Timing:**
-| Setting | Value |
-|---------|-------|
-| Heartbeat write interval | 1 second |
-| Heartbeat check interval | 2 seconds |
-| Stale threshold | 4 seconds |
-| Max detection time | ~6 seconds |
+**Heartbeat Timing (Session 5 - Updated in Session 6):**
+| Setting | Session 5 Value | Session 6 Value |
+|---------|-----------------|------------------|
+| Heartbeat write interval | 1 second | 500ms |
+| Heartbeat check interval | 2 seconds | 1 second |
+| Stale threshold | 4 seconds | 1 second |
+| Max detection time | ~6 seconds | ~2 seconds |
 
 **Files Created at Runtime:**
 - `.abs_session_heartbeat` - Written by chat window while running
@@ -126,4 +190,4 @@ Future<String> executePythonScript(String projectPath, String scriptPath) async 
 
 ---
 
-**Last Updated**: December 6, 2025, 11:30 PM
+**Last Updated**: December 7, 2025

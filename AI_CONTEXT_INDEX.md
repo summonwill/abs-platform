@@ -68,10 +68,12 @@ new content
 ## Session/Heartbeat System
 
 ### How It Works
-1. Chat window writes `.abs_session_heartbeat` file every 1 second
-2. Main window checks every 2 seconds
-3. If heartbeat > 4 seconds old → window crashed → auto-complete session
+1. Chat window writes `.abs_session_heartbeat` file every **500ms** with timestamp
+2. Main window checks heartbeat file every **1 second**
+3. If heartbeat > **1 second** old → window crashed → auto-complete session
 4. "Close & Save" button: stops session properly, deletes heartbeat
+5. **Pre-session check**: Before opening/creating sessions, checks for active heartbeat
+6. **Accumulated duration**: Sessions track total time across multiple open/close cycles
 
 ### Runtime Files (in project directory)
 - `.abs_session_heartbeat` - Timestamp file while chat window is open
@@ -89,6 +91,9 @@ new content
 - File editor in separate floating windows (re_editor)
 - Session auto-stop on window close (heartbeat)
 - OneDrive compatibility (Windows rmdir command)
+- **Session timing fixes** (accumulated duration, negative duration protection)
+- **Fast heartbeat detection** (500ms write, 1s stale, ~2s max detection)
+- **Pre-session heartbeat check** (prevents opening during active session)
 
 ## Next Features (TODO)
 
@@ -122,5 +127,5 @@ new content
 
 ---
 
-**Last Updated**: December 6, 2025, 11:30 PM
+**Last Updated**: December 7, 2025
 **See Also**: SESSION_NOTES.md, TODO.md

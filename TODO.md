@@ -33,9 +33,17 @@
 - [ ] Search/replace in file editor
 - [ ] File rename functionality
 
-## ✅ Completed (December 6, 2025)
+## ✅ Completed (December 7, 2025)
 
-### Session Auto-Stop Feature ✅
+### Session Timing & Heartbeat Improvements ✅ (Session 6)
+- [x] Fix `copyWith(endedAt: null)` not clearing endedAt (added `clearEndedAt` flag)
+- [x] Add negative duration protection in duration getter
+- [x] Implement `accumulatedDuration` tracking across session reopens
+- [x] Speed up heartbeat (500ms write, 1s stale, 1s check)
+- [x] Add pre-session heartbeat check to prevent opening during active session
+- [x] Show "A session is already active" message when another window is open
+
+### Session Auto-Stop Feature ✅ (Session 5)
 - [x] Fix first-click API key error (wait for keys to load)
 - [x] Heartbeat mechanism for crashed window detection
 - [x] "Close & Save" button for proper session stop
@@ -98,9 +106,10 @@ Future<ProcessResult> executePythonScript(String projectPath, String scriptPath)
 ### Architecture Reminders
 - Separate windows are separate OS processes (no shared memory)
 - Use file-based sync for cross-window communication
-- Heartbeat files detect crashed windows
+- Heartbeat files detect crashed windows (500ms write, 1s stale threshold)
 - Hive only accessible from main window
+- Pre-session heartbeat check prevents race conditions
 
 ---
 
-**Last Updated**: December 6, 2025, 11:30 PM
+**Last Updated**: December 7, 2025
