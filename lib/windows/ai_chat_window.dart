@@ -56,15 +56,8 @@ class _AIChatWindowState extends State<AIChatWindow> {
 
     return ProviderScope(
       overrides: [
-        // Override aiKeysProvider state with keys passed from main window
-        aiKeysProvider.overrideWith((ref) {
-          final notifier = AIKeysNotifier();
-          // Set the state directly after a short delay to allow initialization
-          Future.microtask(() {
-            notifier.setKeysDirectly(apiKeys);
-          });
-          return notifier;
-        }),
+        // Override aiKeysProvider with pre-loaded keys (no Hive access needed)
+        aiKeysProvider.overrideWith((ref) => AIKeysNotifier.withKeys(apiKeys)),
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,

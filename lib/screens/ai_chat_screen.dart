@@ -689,6 +689,19 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
           }
         }
         
+        // Try to refresh the project's file list so UI updates
+        // This will fail in separate windows (no Hive access) but that's OK
+        try {
+          final updatedProject = await ref.read(projectsProvider.notifier).refreshProjectFiles(widget.project.id);
+          if (updatedProject != null) {
+            // Also update selectedProjectProvider so project_detail_screen refreshes
+            ref.read(selectedProjectProvider.notifier).state = updatedProject;
+          }
+        } catch (e) {
+          // Expected in separate windows - file operations still work, just can't update main window
+          print('Note: Could not refresh main window file list (expected in separate windows): $e');
+        }
+        
         setState(() {
           _messages.add(ChatMessage(
             content: response,

@@ -10,6 +10,9 @@ final aiKeysProvider = StateNotifierProvider<AIKeysNotifier, AIKeys>((ref) {
   return AIKeysNotifier();
 });
 
+/// Tracks whether API keys have been loaded from storage
+final aiKeysLoadedProvider = StateProvider<bool>((ref) => false);
+
 final selectedAIProviderProvider = StateProvider<AIProvider>((ref) {
   return AIProvider.openai;
 });
@@ -20,6 +23,8 @@ class AIKeys {
   final String? gemini;
 
   AIKeys({this.openAI, this.anthropic, this.gemini});
+  
+  bool get hasAnyKey => openAI != null || anthropic != null || gemini != null;
 
   AIKeys copyWith({String? openAI, String? anthropic, String? gemini}) {
     return AIKeys(
@@ -32,19 +37,34 @@ class AIKeys {
 
 class AIKeysNotifier extends StateNotifier<AIKeys> {
   Box<String>? _box;
+  final bool _useHive;
+  bool _isLoaded = false;
+  
+  bool get isLoaded => _isLoaded;
 
-  AIKeysNotifier() : super(AIKeys()) {
+  /// Standard constructor - uses Hive for persistence (main window only)
+  AIKeysNotifier() : _useHive = true, super(AIKeys()) {
     _init();
   }
   
-  /// Set keys directly without Hive (used by separate windows)
-  void setKeysDirectly(AIKeys keys) {
-    state = keys;
-  }
+  /// Factory constructor for separate windows - no Hive access
+  /// Pass the API keys directly since Hive is locked by main process
+  AIKeysNotifier.withKeys(AIKeys keys) : _useHive = false, _isLoaded = true, super(keys);
 
   Future<void> _init() async {
-    _box = await Hive.openBox<String>('ai_keys');
-    await _loadKeys();
+    if (!_useHive) {
+      _isLoaded = true;
+      return;
+    }
+    try {
+      _box = await Hive.openBox<String>('ai_keys');
+      await _loadKeys();
+      _isLoaded = true;
+      print('AIKeysNotifier: Keys loaded successfully');
+    } catch (e) {
+      print('AIKeysNotifier: Hive init failed: $e');
+      _isLoaded = true; // Mark as loaded even on error so UI isn't stuck
+    }
   }
 
   Future<void> _loadKeys() async {

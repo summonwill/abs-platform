@@ -201,6 +201,38 @@ class ProjectsNotifier extends StateNotifier<List<Project>> {
     await _saveProjects();
   }
 
+  /// Refresh the governance files list for a project by re-scanning the directory
+  /// 
+  /// Call this after AI creates, updates, or deletes files to update the UI
+  Future<Project?> refreshProjectFiles(String projectId) async {
+    final project = getProject(projectId);
+    if (project == null) return null;
+
+    try {
+      // Re-detect governance files from disk
+      final governanceFiles = await _fileService.detectGovernanceFiles(project.path);
+      
+      // Update project with new file list
+      final updatedProject = project.copyWith(
+        governanceFiles: governanceFiles,
+        lastModified: DateTime.now(),
+      );
+      
+      // Update state
+      state = [
+        for (final p in state)
+          if (p.id == projectId) updatedProject else p,
+      ];
+      await _saveProjects();
+      
+      print('DEBUG refreshProjectFiles: Found ${governanceFiles.length} files');
+      return updatedProject;
+    } catch (e) {
+      print('Error refreshing project files: $e');
+      return null;
+    }
+  }
+
   Project? getProject(String projectId) {
     try {
       return state.firstWhere((p) => p.id == projectId);

@@ -99,26 +99,44 @@ class AIService {
     final messages = [
       {
         'role': 'system',
-        'content': 'You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
-            'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
-            'maintain session notes, and work with any project files.\n\n'
-            'CRITICAL - FILE OPERATIONS: When the user asks you to create, update, or delete files, you MUST use this exact format:\n\n'
-            'To CREATE a new file:\n'
-            '=== CREATE: filename.ext ===\n'
-            'file content here\n\n'
-            'To UPDATE an existing file:\n'
-            '=== UPDATE: filename.ext ===\n'
-            'updated content\n\n'
-            'To DELETE a file:\n'
-            '=== DELETE: filename.ext ===\n\n'
-            'IMPORTANT: Do NOT add explanatory text before the === markers. Start your response with === if creating/updating/deleting a file.\n'
-            'For governance files (TODO.md, SESSION_NOTES.md, AI_RULES_AND_BEST_PRACTICES.md, AI_CONTEXT_INDEX.md), you can also use: === FILENAME.md ===\n\n'
-            'Example - User: "create test.txt with hello world"\n'
-            'Your response should start with:\n'
-            '=== CREATE: test.txt ===\n'
-            'hello world\n\n'
-            'Then you can add explanation after.\n\n'
-            'If asked about files you haven\'t seen, ask if they\'d like you to read them.'
+        'content': '''You are an AI assistant helping with project management using the AI Bootstrap System (ABS).
+The user has provided their project governance files and file structure. Help them manage their project.
+
+🔴 MANDATORY FILE OPERATION FORMAT 🔴
+When the user asks you to CREATE, UPDATE, or DELETE ANY file, you MUST use this EXACT format:
+
+FOR CREATING FILES - Start your response with:
+=== CREATE: path/to/filename.ext ===
+(file content goes here)
+
+FOR UPDATING FILES - Start your response with:
+=== UPDATE: path/to/filename.ext ===
+(new file content goes here)
+
+FOR DELETING FILES - Start your response with:
+=== DELETE: path/to/filename.ext ===
+
+RULES:
+1. ALWAYS start with the === marker when doing file operations
+2. NO text before the === marker
+3. Include the FULL file path relative to project root
+4. After the file content, you can add explanation
+
+EXAMPLE REQUEST: "create a test.md file"
+CORRECT RESPONSE:
+=== CREATE: test.md ===
+# Test File
+
+This is a test file.
+
+---
+I've created the test.md file for you.
+
+WRONG RESPONSE:
+Sure! I'll create that file for you...
+(This is wrong because it has text before ===)
+
+If you cannot create a file for any reason, explain why clearly.'''
       },
       if (contextMessage.isNotEmpty) {
         'role': 'system',
@@ -144,7 +162,17 @@ class AIService {
         },
       );
 
-      return response.data['choices'][0]['message']['content'];
+      final responseText = response.data['choices'][0]['message']['content'] as String;
+      
+      // DEBUG: Log the raw AI response for troubleshooting
+      print('DEBUG _sendToOpenAI - RAW RESPONSE:');
+      print('  Response length: ${responseText.length}');
+      print('  First 500 chars: ${responseText.substring(0, responseText.length < 500 ? responseText.length : 500)}');
+      print('  Contains === CREATE: ${responseText.contains('=== CREATE:')}');
+      print('  Contains === UPDATE: ${responseText.contains('=== UPDATE:')}');
+      print('  Contains === DELETE: ${responseText.contains('=== DELETE:')}');
+      
+      return responseText;
     } catch (e) {
       if (e is DioException && e.response != null) {
         final errorData = e.response?.data;
@@ -332,20 +360,43 @@ class AIService {
   Map<String, String> parseFileUpdates(String aiResponse) {
     final updates = <String, String>{};
     
-    // Pattern for new format: === OPERATION: filepath ===
-    // More flexible - can appear anywhere in the response
-    final operationPattern = RegExp(
-      r'===\s*(CREATE|UPDATE|DELETE):\s*([^\n]+?)\s*===\s*\n([\s\S]*?)(?=\n===|---|\Z)',
+    // DEBUG: Log the response being parsed
+    print('DEBUG parseFileUpdates:');
+    print('  Response length: ${aiResponse.length}');
+    print('  First 300 chars: ${aiResponse.substring(0, aiResponse.length < 300 ? aiResponse.length : 300)}');
+    
+    // Pattern for CREATE/UPDATE operations (require content after)
+    final createUpdatePattern = RegExp(
+      r'===\s*(CREATE|UPDATE):\s*([^\n]+?)\s*===\s*\n([\s\S]*?)(?=\n===|---|\Z)',
       caseSensitive: false,
       multiLine: true,
     );
     
-    final operationMatches = operationPattern.allMatches(aiResponse);
-    for (var match in operationMatches) {
+    final createUpdateMatches = createUpdatePattern.allMatches(aiResponse);
+    print('  CREATE/UPDATE matches found: ${createUpdateMatches.length}');
+    
+    for (var match in createUpdateMatches) {
       final operation = match.group(1)!.toUpperCase();
       final filepath = match.group(2)!.trim();
       final content = match.group(3)?.trim() ?? '';
+      print('  Found: $operation:$filepath (content: ${content.length} chars)');
       updates['$operation:$filepath'] = content;
+    }
+    
+    // Separate pattern for DELETE operations (no content required)
+    final deletePattern = RegExp(
+      r'===\s*DELETE:\s*([^\n=]+?)\s*===',
+      caseSensitive: false,
+      multiLine: true,
+    );
+    
+    final deleteMatches = deletePattern.allMatches(aiResponse);
+    print('  DELETE matches found: ${deleteMatches.length}');
+    
+    for (var match in deleteMatches) {
+      final filepath = match.group(1)!.trim();
+      print('  Found: DELETE:$filepath');
+      updates['DELETE:$filepath'] = '';
     }
     
     // Pattern to match legacy governance file format
@@ -356,15 +407,19 @@ class AIService {
     );
 
     final matches = filePattern.allMatches(aiResponse);
+    print('  Legacy format matches: ${matches.length}');
+    
     for (var match in matches) {
       final fileName = match.group(1)?.trim();
       final content = match.group(2)?.trim();
       
       if (fileName != null && content != null && content.isNotEmpty) {
+        print('  Found legacy: $fileName (content: ${content.length} chars)');
         updates[fileName] = content;
       }
     }
 
+    print('  Total updates: ${updates.length}');
     return updates;
   }
 }

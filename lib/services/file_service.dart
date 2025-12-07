@@ -115,11 +115,12 @@ class FileService {
   ///   - projectPath: Absolute path to project folder
   /// 
   /// Returns: List of governance file names that exist in the project
-  ///   Checks for: AI_RULES_AND_BEST_PRACTICES.md, TODO.md,
-  ///   SESSION_NOTES.md, AI_CONTEXT_INDEX.md, SESSION_BUFFER.md
+  ///   Checks for standard ABS files plus any other .md files in the root
   Future<List<String>> detectGovernanceFiles(String projectPath) async {
     final files = <String>[];
-    final governanceFiles = [
+    
+    // Standard governance files (check these first for consistent ordering)
+    final standardGovernanceFiles = [
       'AI_RULES_AND_BEST_PRACTICES.md',
       'TODO.md',
       'SESSION_NOTES.md',
@@ -127,11 +128,29 @@ class FileService {
       'SESSION_BUFFER.md',
     ];
 
-    for (final fileName in governanceFiles) {
+    for (final fileName in standardGovernanceFiles) {
       final file = File('$projectPath${Platform.pathSeparator}$fileName');
       if (await file.exists()) {
         files.add(fileName);
       }
+    }
+    
+    // Also detect any other .md files in the project root that AI may have created
+    try {
+      final dir = Directory(projectPath);
+      if (await dir.exists()) {
+        await for (final entity in dir.list()) {
+          if (entity is File) {
+            final fileName = entity.path.split(Platform.pathSeparator).last;
+            // Add any .md files not already in the list
+            if (fileName.endsWith('.md') && !files.contains(fileName)) {
+              files.add(fileName);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('Error scanning for additional files: $e');
     }
 
     return files;
@@ -235,18 +254,30 @@ class FileService {
   /// Side Effects: Creates parent directories if they don't exist
   Future<bool> writeProjectFile(String projectPath, String relativePath, String content) async {
     try {
-      final file = File('$projectPath${Platform.pathSeparator}$relativePath');
+      // Normalize path separators for Windows
+      final normalizedPath = relativePath.replaceAll('/', Platform.pathSeparator);
+      final fullPath = '$projectPath${Platform.pathSeparator}$normalizedPath';
+      
+      print('DEBUG writeProjectFile:');
+      print('  projectPath: $projectPath');
+      print('  relativePath: $relativePath');
+      print('  fullPath: $fullPath');
+      print('  content length: ${content.length}');
+      
+      final file = File(fullPath);
       
       // Create parent directory if it doesn't exist
       final parentDir = file.parent;
       if (!await parentDir.exists()) {
+        print('  Creating parent directory: ${parentDir.path}');
         await parentDir.create(recursive: true);
       }
       
       await file.writeAsString(content);
+      print('  SUCCESS: File written');
       return true;
     } catch (e) {
-      print('Error writing file $relativePath: $e');
+      print('ERROR writing file $relativePath: $e');
       return false;
     }
   }
@@ -260,11 +291,15 @@ class FileService {
   /// Returns: true if successful, false otherwise
   Future<bool> deleteProjectFile(String projectPath, String relativePath) async {
     try {
+      print('DEBUG deleteProjectFile: projectPath=$projectPath, relativePath=$relativePath');
       final file = File('$projectPath${Platform.pathSeparator}$relativePath');
+      print('  Full path: ${file.path}');
       if (await file.exists()) {
         await file.delete();
+        print('  SUCCESS: File deleted');
         return true;
       }
+      print('  File does not exist');
       return false;
     } catch (e) {
       print('Error deleting file $relativePath: $e');

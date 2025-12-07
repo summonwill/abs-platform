@@ -6,17 +6,19 @@
 ///   - Sessions tab: Lists work sessions with start/end functionality
 ///   - File viewer dialog: CodeEditor-based file editing with save capability
 ///   - AI chat window spawning: Creates separate OS windows for AI interaction
+///   - File system watcher: Auto-refreshes file list when files change
 /// 
 /// Dependencies:
 ///   - desktop_multi_window: Separate window creation
 ///   - re_editor: Efficient large file editing
 ///   - project_provider: Project state management
 /// 
-/// Last Modified: December 5, 2025
+/// Last Modified: December 6, 2025
 library;
 
 import 'dart:io';
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -28,12 +30,72 @@ import '../services/file_service.dart';
 import '../services/debug_logger.dart';
 import '../widgets/monaco_editor.dart';
 
-/// Main project detail screen widget
-class ProjectDetailScreen extends ConsumerWidget {
+/// Main project detail screen widget with file system watching
+class ProjectDetailScreen extends ConsumerStatefulWidget {
   const ProjectDetailScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ProjectDetailScreen> createState() => _ProjectDetailScreenState();
+}
+
+class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
+  StreamSubscription<FileSystemEvent>? _fileWatcher;
+  Timer? _debounceTimer;
+  String? _watchingPath;
+
+  @override
+  void dispose() {
+    _fileWatcher?.cancel();
+    _debounceTimer?.cancel();
+    super.dispose();
+  }
+
+  void _setupFileWatcher(String projectPath) {
+    // Don't set up again if already watching this path
+    if (_watchingPath == projectPath) return;
+    
+    // Cancel previous watcher
+    _fileWatcher?.cancel();
+    _watchingPath = projectPath;
+    
+    try {
+      final directory = Directory(projectPath);
+      if (directory.existsSync()) {
+        _fileWatcher = directory.watch(events: FileSystemEvent.all).listen((event) {
+          // Only react to .md files
+          if (event.path.endsWith('.md')) {
+            print('DEBUG FileWatcher: ${event.type} - ${event.path}');
+            _debouncedRefresh();
+          }
+        });
+        print('DEBUG: File watcher set up for $projectPath');
+      }
+    } catch (e) {
+      print('DEBUG: Could not set up file watcher: $e');
+    }
+  }
+
+  void _debouncedRefresh() {
+    // Debounce to avoid multiple rapid refreshes
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+      _refreshFiles();
+    });
+  }
+
+  Future<void> _refreshFiles() async {
+    final project = ref.read(selectedProjectProvider);
+    if (project == null) return;
+    
+    final updatedProject = await ref.read(projectsProvider.notifier).refreshProjectFiles(project.id);
+    if (updatedProject != null && mounted) {
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+      print('DEBUG: Auto-refreshed file list - ${updatedProject.governanceFiles.length} files');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final project = ref.watch(selectedProjectProvider);
 
     if (project == null) {
@@ -42,6 +104,9 @@ class ProjectDetailScreen extends ConsumerWidget {
         body: const Center(child: Text('No project selected')),
       );
     }
+
+    // Set up file watcher when project changes
+    _setupFileWatcher(project.path);
 
     return Scaffold(
       appBar: AppBar(
@@ -108,8 +173,38 @@ class ProjectDetailScreen extends ConsumerWidget {
   }
 
   void _showAIChatWindow(BuildContext context, Project project, WidgetRef ref) async {
+    // Get the notifier to check if loaded
+    final notifier = ref.read(aiKeysProvider.notifier);
+    
+    // Wait for keys to load if not yet loaded (max 2 seconds)
+    int attempts = 0;
+    while (!notifier.isLoaded && attempts < 20) {
+      await Future.delayed(const Duration(milliseconds: 100));
+      attempts++;
+    }
+    
     // Get API keys to pass to separate window (separate windows can't access Hive)
     final aiKeys = ref.read(aiKeysProvider);
+    
+    // Debug: Check if keys are available
+    print('DEBUG _showAIChatWindow:');
+    print('  Keys loaded: ${notifier.isLoaded}');
+    print('  OpenAI key present: ${aiKeys.openAI != null}');
+    print('  Anthropic key present: ${aiKeys.anthropic != null}');
+    print('  Gemini key present: ${aiKeys.gemini != null}');
+    
+    if (!aiKeys.hasAnyKey) {
+      // Show warning if no keys configured
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No API keys configured. Please add keys in Settings first.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
+    }
     
     // Create window arguments with project data AND API keys
     final windowArgs = {
@@ -432,13 +527,25 @@ class _InfoChip extends StatelessWidget {
   }
 }
 
-class _FilesTab extends StatelessWidget {
+class _FilesTab extends ConsumerWidget {
   final Project project;
 
   const _FilesTab({required this.project});
+  
+  Future<void> _refreshFiles(BuildContext context, WidgetRef ref) async {
+    final updatedProject = await ref.read(projectsProvider.notifier).refreshProjectFiles(project.id);
+    if (updatedProject != null) {
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Found ${updatedProject.governanceFiles.length} files')),
+        );
+      }
+    }
+  }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     if (project.governanceFiles.isEmpty) {
       return Center(
         child: Column(
@@ -462,26 +569,52 @@ class _FilesTab extends StatelessWidget {
               icon: const Icon(Icons.add),
               label: const Text('Generate ABS Files'),
             ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => _refreshFiles(context, ref),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Refresh Files'),
+            ),
           ],
         ),
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: project.governanceFiles.length,
-      itemBuilder: (context, index) {
-        final fileName = project.governanceFiles[index];
-        return Card(
-          margin: const EdgeInsets.only(bottom: 8),
-          child: ListTile(
-            leading: const Icon(Icons.description),
-            title: Text(fileName),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _openFileViewer(context, project, fileName),
+    return Column(
+      children: [
+        // Refresh button at the top
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton.icon(
+                onPressed: () => _refreshFiles(context, ref),
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Refresh'),
+              ),
+            ],
           ),
-        );
-      },
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: project.governanceFiles.length,
+            itemBuilder: (context, index) {
+              final fileName = project.governanceFiles[index];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  leading: const Icon(Icons.description),
+                  title: Text(fileName),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _openFileViewer(context, project, fileName),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
