@@ -30,6 +30,76 @@ import '../services/file_service.dart';
 import '../services/debug_logger.dart';
 import '../widgets/monaco_editor.dart';
 
+/// Result of heartbeat check
+enum HeartbeatStatus {
+  noHeartbeat,      // No heartbeat file - safe to proceed
+  cleanedUp,        // Stale heartbeat was cleaned up - safe to proceed
+  activeWindow,     // Fresh heartbeat - another window is active
+}
+
+/// Shared helper to check and clean up stale heartbeats (can be called from any widget with a ref)
+/// Returns the status of the heartbeat check
+Future<HeartbeatStatus> _checkAndCleanupHeartbeat(String projectPath, String projectId, WidgetRef ref) async {
+  final heartbeatFile = File('$projectPath${Platform.pathSeparator}.abs_session_heartbeat');
+  
+  if (!await heartbeatFile.exists()) {
+    return HeartbeatStatus.noHeartbeat; // No heartbeat file, safe to proceed
+  }
+  
+  try {
+    final timestamp = await heartbeatFile.readAsString();
+    final heartbeatTime = DateTime.parse(timestamp.trim());
+    final age = DateTime.now().difference(heartbeatTime);
+    
+    // If heartbeat is older than 1 second, it's stale (window closed/crashed)
+    if (age.inSeconds >= 1) {
+      print('DEBUG CleanupHeartbeat: Found stale heartbeat (${age.inSeconds}s old), cleaning up...');
+      
+      // Delete the heartbeat file
+      try {
+        await heartbeatFile.delete();
+      } catch (_) {}
+      
+      // End any orphaned active sessions
+      final projects = ref.read(projectsProvider);
+      final currentProject = projects.where((p) => p.id == projectId).firstOrNull;
+      
+      if (currentProject != null) {
+        final activeSessions = currentProject.sessions.where(
+          (s) => s.status == SessionStatus.inProgress,
+        ).toList();
+        
+        for (final session in activeSessions) {
+          await ref.read(projectsProvider.notifier).endSession(projectId, session.id);
+          print('DEBUG CleanupHeartbeat: Ended orphaned session ${session.id}');
+        }
+        
+        // Update selected project
+        if (activeSessions.isNotEmpty) {
+          final updatedProject = ref.read(projectsProvider.notifier).getProject(projectId);
+          if (updatedProject != null) {
+            ref.read(selectedProjectProvider.notifier).state = updatedProject;
+          }
+        }
+      }
+      
+      print('DEBUG CleanupHeartbeat: Cleanup complete');
+      return HeartbeatStatus.cleanedUp;
+    } else {
+      // Heartbeat is recent - another chat window is still active
+      print('DEBUG CleanupHeartbeat: Heartbeat is fresh (${age.inMilliseconds}ms old) - another window is active');
+      return HeartbeatStatus.activeWindow;
+    }
+  } catch (e) {
+    // Corrupted heartbeat file - just delete it
+    print('DEBUG CleanupHeartbeat: Error reading heartbeat, deleting: $e');
+    try {
+      await heartbeatFile.delete();
+    } catch (_) {}
+    return HeartbeatStatus.cleanedUp;
+  }
+}
+
 /// Main project detail screen widget with file system watching
 class ProjectDetailScreen extends ConsumerStatefulWidget {
   const ProjectDetailScreen({super.key});
@@ -41,6 +111,7 @@ class ProjectDetailScreen extends ConsumerStatefulWidget {
 class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
   StreamSubscription<FileSystemEvent>? _fileWatcher;
   Timer? _debounceTimer;
+  Timer? _heartbeatChecker;
   String? _watchingPath;
   
   // Static flag to temporarily pause file watching during delete operations
@@ -50,16 +121,24 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
   void dispose() {
     _fileWatcher?.cancel();
     _debounceTimer?.cancel();
+    _heartbeatChecker?.cancel();
     super.dispose();
   }
 
-  void _setupFileWatcher(String projectPath) {
+  void _setupFileWatcher(String projectPath, String projectId) {
     // Don't set up again if already watching this path
     if (_watchingPath == projectPath) return;
     
-    // Cancel previous watcher
+    // Cancel previous watchers
     _fileWatcher?.cancel();
+    _heartbeatChecker?.cancel();
     _watchingPath = projectPath;
+    
+    // Sync any chat history saved by separate windows
+    ref.read(projectsProvider.notifier).syncChatHistoryFromFile(projectId);
+    
+    // Start periodic heartbeat checker to detect crashed chat windows
+    _startHeartbeatChecker(projectPath, projectId);
     
     try {
       final directory = Directory(projectPath);
@@ -68,6 +147,24 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
         _fileWatcher = directory.watch(events: FileSystemEvent.all, recursive: true).listen((event) {
           // Skip if file watching is paused (during delete operations)
           if (pauseFileWatching) return;
+          
+          // Check if this is the chat history file - sync it after a delay
+          if (event.path.endsWith('.abs_chat_history.json')) {
+            print('DEBUG FileWatcher: Chat history file changed - will sync after delay...');
+            // Debounce with longer delay to ensure file write completes fully
+            // The separate window writes async, so we need to wait for it to finish
+            _debounceTimer?.cancel();
+            _debounceTimer = Timer(const Duration(milliseconds: 800), () {
+              print('DEBUG FileWatcher: Now syncing chat history...');
+              ref.read(projectsProvider.notifier).syncChatHistoryFromFile(projectId).then((updatedProject) {
+                if (updatedProject != null && mounted) {
+                  ref.read(selectedProjectProvider.notifier).state = updatedProject;
+                  print('DEBUG: Synced session state from chat window');
+                }
+              });
+            });
+            return;
+          }
           
           // React to common file types that AI might create/edit
           final path = event.path.toLowerCase();
@@ -99,6 +196,79 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
       _refreshFiles();
     });
   }
+  
+  /// Monitor heartbeat file to detect if chat window crashed/was force-closed
+  void _startHeartbeatChecker(String projectPath, String projectId) {
+    _heartbeatChecker = Timer.periodic(const Duration(seconds: 1), (_) async {
+      final heartbeatFile = File('$projectPath${Platform.pathSeparator}.abs_session_heartbeat');
+      
+      if (await heartbeatFile.exists()) {
+        try {
+          final timestamp = await heartbeatFile.readAsString();
+          final heartbeatTime = DateTime.parse(timestamp.trim());
+          final age = DateTime.now().difference(heartbeatTime);
+          
+          // If heartbeat is older than 1 second, window likely crashed
+          if (age.inSeconds >= 1) {
+            print('DEBUG HeartbeatChecker: Stale heartbeat detected (${age.inSeconds}s old) - window likely crashed');
+            
+            // Clean up the stale heartbeat file FIRST
+            try {
+              await heartbeatFile.delete();
+              print('DEBUG HeartbeatChecker: Deleted stale heartbeat file');
+            } catch (e) {
+              print('DEBUG HeartbeatChecker: Could not delete heartbeat: $e');
+            }
+            
+            // Try to sync chat history first (may have conversation data)
+            await ref.read(projectsProvider.notifier).syncChatHistoryFromFile(projectId);
+            
+            // Get the current project from provider (not from file sync result)
+            final projects = ref.read(projectsProvider);
+            final currentProject = projects.where((p) => p.id == projectId).firstOrNull;
+            
+            if (currentProject != null && mounted) {
+              // Find any in-progress sessions and complete them
+              final activeSessions = currentProject.sessions.where(
+                (s) => s.status == SessionStatus.inProgress,
+              ).toList();
+              
+              print('DEBUG HeartbeatChecker: Found ${activeSessions.length} active session(s) to complete');
+              
+              for (final session in activeSessions) {
+                print('DEBUG HeartbeatChecker: Completing orphaned session ${session.id}');
+                try {
+                  await ref.read(projectsProvider.notifier).endSession(projectId, session.id);
+                  print('DEBUG HeartbeatChecker: Successfully completed session ${session.id}');
+                } catch (e) {
+                  print('DEBUG HeartbeatChecker: Error completing session: $e');
+                }
+              }
+              
+              // Refresh the selected project to show updated state
+              if (activeSessions.isNotEmpty && mounted) {
+                // Get fresh project state after ending sessions
+                final updatedProjects = ref.read(projectsProvider);
+                final refreshedProject = updatedProjects.where((p) => p.id == projectId).firstOrNull;
+                if (refreshedProject != null) {
+                  ref.read(selectedProjectProvider.notifier).state = refreshedProject;
+                  print('DEBUG HeartbeatChecker: Cleaned up ${activeSessions.length} crashed session(s)');
+                }
+              }
+            } else {
+              print('DEBUG HeartbeatChecker: No project found (id=$projectId) or widget not mounted');
+            }
+          }
+        } catch (e) {
+          // If we can't parse, delete the bad file
+          print('DEBUG HeartbeatChecker: Error reading heartbeat: $e');
+          try {
+            await heartbeatFile.delete();
+          } catch (_) {}
+        }
+      }
+    });
+  }
 
   Future<void> _refreshFiles() async {
     final project = ref.read(selectedProjectProvider);
@@ -123,7 +293,7 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
     }
 
     // Set up file watcher when project changes
-    _setupFileWatcher(project.path);
+    _setupFileWatcher(project.path, project.id);
 
     return Scaffold(
       appBar: AppBar(
@@ -376,15 +546,7 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
               title: const Text('Edit Project'),
               onTap: () {
                 Navigator.pop(context);
-                // TODO: Edit project dialog
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.archive),
-              title: const Text('Archive Project'),
-              onTap: () {
-                Navigator.pop(context);
-                // TODO: Archive project
+                _showEditProjectDialog(context, ref, project);
               },
             ),
             const Divider(),
@@ -433,6 +595,68 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Deleted project: ${project.name}')),
+        );
+      }
+    }
+  }
+  
+  Future<void> _showEditProjectDialog(BuildContext context, WidgetRef ref, Project project) async {
+    final nameController = TextEditingController(text: project.name);
+    final descController = TextEditingController(text: project.description ?? '');
+    
+    final result = await showDialog<Map<String, String?>>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Project'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: 'Project Name',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: descController,
+              decoration: const InputDecoration(
+                labelText: 'Description (optional)',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, {
+              'name': nameController.text,
+              'description': descController.text.isEmpty ? null : descController.text,
+            }),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result['name']!.isNotEmpty) {
+      final updatedProject = project.copyWith(
+        name: result['name']!,
+        description: result['description'],
+        lastModified: DateTime.now(),
+      );
+      await ref.read(projectsProvider.notifier).updateProject(updatedProject);
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+      
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Project updated')),
         );
       }
     }
@@ -1285,13 +1509,55 @@ class _FilesTabState extends ConsumerState<_FilesTab> {
   }
 }
 
-class _SessionsTab extends ConsumerWidget {
+class _SessionsTab extends ConsumerStatefulWidget {
   final Project project;
 
   const _SessionsTab({required this.project});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_SessionsTab> createState() => _SessionsTabState();
+}
+
+class _SessionsTabState extends ConsumerState<_SessionsTab> {
+  Timer? _timer;
+  
+  @override
+  void initState() {
+    super.initState();
+    _startTimerIfNeeded();
+  }
+  
+  @override
+  void didUpdateWidget(_SessionsTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _startTimerIfNeeded();
+  }
+  
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+  
+  void _startTimerIfNeeded() {
+    // Check if any session is active
+    final hasActiveSession = widget.project.sessions.any((s) => s.isActive);
+    
+    if (hasActiveSession && _timer == null) {
+      // Update every second for live duration
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!hasActiveSession && _timer != null) {
+      _timer?.cancel();
+      _timer = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final project = widget.project;
+    
     if (project.sessions.isEmpty) {
       return Center(
         child: Column(
@@ -1318,30 +1584,432 @@ class _SessionsTab extends ConsumerWidget {
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: project.sessions.length,
-      itemBuilder: (context, index) {
-        final session = project.sessions[index];
-        return Card(
-          margin: const EdgeInsets.only(bottom: 8),
-          child: ListTile(
-            leading: Icon(
-              session.isActive ? Icons.radio_button_checked : Icons.check_circle_outline,
-              color: session.isActive ? Colors.green : null,
+    return Column(
+      children: [
+        // New Session button at top (outside reorderable list)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Card(
+            color: Theme.of(context).colorScheme.primaryContainer,
+            child: ListTile(
+              leading: const Icon(Icons.add_circle),
+              title: const Text('Start New Session'),
+              subtitle: const Text('Create a new AI conversation'),
+              onTap: () => _startNewSession(context, ref, project),
             ),
-            title: Text(session.title),
-            subtitle: Text(
-              '${_formatDate(session.startedAt)} • ${_formatDuration(session.duration)}',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () {
-              // TODO: Open session details
+          ),
+        ),
+        // Hint for drag reordering
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Icon(Icons.drag_indicator, size: 14, color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.5)),
+              const SizedBox(width: 4),
+              Text(
+                'Drag sessions to reorder',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.5),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        // Reorderable session list
+        Expanded(
+          child: ReorderableListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: project.sessions.length,
+            onReorder: (oldIndex, newIndex) {
+              // Adjust for the way ReorderableListView handles indices
+              if (newIndex > oldIndex) newIndex--;
+              _reorderSession(ref, project, oldIndex, newIndex);
+            },
+            itemBuilder: (context, index) {
+              final session = project.sessions[index];
+              final messageCount = session.conversationHistory.length;
+              
+              return Card(
+                key: Key(session.id),
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  leading: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Drag handle
+                      ReorderableDragStartListener(
+                        index: index,
+                        child: Icon(
+                          Icons.drag_indicator,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.5),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Icon(
+                        session.isActive ? Icons.chat_bubble : Icons.chat_bubble_outline,
+                        color: session.isActive ? Colors.green : null,
+                      ),
+                    ],
+                  ),
+                  title: Row(
+                    children: [
+                      Expanded(child: Text(session.title)),
+                      if (session.isActive)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.green,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Text(
+                            'ACTIVE',
+                            style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                    ],
+                  ),
+                  subtitle: Row(
+                    children: [
+                      Text(_formatDate(session.startedAt)),
+                      const Text(' • '),
+                      Icon(Icons.message, size: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      const SizedBox(width: 2),
+                      Text('$messageCount msgs'),
+                      const Text(' • '),
+                      if (session.isActive) ...[
+                        Icon(Icons.timer, size: 12, color: Colors.green),
+                        const SizedBox(width: 2),
+                      ],
+                      Text(
+                        _formatDuration(session.duration),
+                        style: session.isActive 
+                            ? const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)
+                            : null,
+                      ),
+                    ],
+                  ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Stop/Resume session button
+                      if (session.isActive)
+                        IconButton(
+                          icon: const Icon(Icons.stop_circle_outlined, color: Colors.orange),
+                          onPressed: () => _stopSession(ref, project, session),
+                          tooltip: 'Stop Session',
+                        )
+                      else if (session.status != SessionStatus.completed)
+                        IconButton(
+                          icon: const Icon(Icons.play_circle_outline, color: Colors.green),
+                          onPressed: () => _resumeSession(ref, project, session),
+                          tooltip: 'Resume Session',
+                        ),
+                      // More options menu
+                      PopupMenuButton<String>(
+                        icon: const Icon(Icons.more_vert),
+                        tooltip: 'More options',
+                        onSelected: (value) async {
+                          switch (value) {
+                            case 'rename':
+                              _renameSession(context, ref, project, session);
+                              break;
+                            case 'copy':
+                              _copySessionToClipboard(session);
+                              break;
+                            case 'delete':
+                              if (await _confirmDeleteSession(context, session)) {
+                                _deleteSession(ref, project, session);
+                              }
+                              break;
+                          }
+                        },
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(
+                            value: 'rename',
+                            child: Row(
+                              children: [
+                                Icon(Icons.edit, size: 18),
+                                SizedBox(width: 8),
+                                Text('Rename'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: 'copy',
+                            child: Row(
+                              children: [
+                                Icon(Icons.copy, size: 18),
+                                SizedBox(width: 8),
+                                Text('Copy conversation'),
+                              ],
+                            ),
+                          ),
+                          const PopupMenuDivider(),
+                          PopupMenuItem(
+                            value: 'delete',
+                            child: Row(
+                              children: [
+                                Icon(Icons.delete, size: 18, color: Colors.red[400]),
+                                const SizedBox(width: 8),
+                                Text('Delete', style: TextStyle(color: Colors.red[400])),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      // Open chat button
+                      IconButton(
+                        icon: const Icon(Icons.open_in_new),
+                        onPressed: () => _openSessionChat(context, ref, project, session),
+                        tooltip: 'Open Chat',
+                      ),
+                    ],
+                  ),
+                  onTap: () => _openSessionChat(context, ref, project, session),
+                ),
+              );
             },
           ),
-        );
-      },
+        ),
+      ],
     );
+  }
+  
+  /// Reorder sessions via drag and drop
+  Future<void> _reorderSession(WidgetRef ref, Project project, int oldIndex, int newIndex) async {
+    await ref.read(projectsProvider.notifier).reorderSessions(project.id, oldIndex, newIndex);
+    
+    // Update selected project
+    final updatedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+    if (updatedProject != null) {
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+    }
+  }
+  
+  Future<void> _stopSession(WidgetRef ref, Project project, Session session) async {
+    await ref.read(projectsProvider.notifier).endSession(project.id, session.id);
+    
+    // Update selected project
+    final updatedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+    if (updatedProject != null) {
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+    }
+  }
+  
+  Future<void> _resumeSession(WidgetRef ref, Project project, Session session) async {
+    await ref.read(projectsProvider.notifier).activateSession(project.id, session.id);
+    
+    // Update selected project
+    final updatedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+    if (updatedProject != null) {
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+    }
+    
+    // Restart timer
+    _startTimerIfNeeded();
+  }
+  
+  Future<bool> _confirmDeleteSession(BuildContext context, Session session) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Session?'),
+        content: Text(
+          'Delete "${session.title}" and its ${session.conversationHistory.length} messages?\n\nThis cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+  
+  Future<void> _deleteSession(WidgetRef ref, Project project, Session session) async {
+    await ref.read(projectsProvider.notifier).deleteSession(project.id, session.id);
+    
+    // Update selected project
+    final updatedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+    if (updatedProject != null) {
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+    }
+  }
+  
+  /// Rename a session
+  Future<void> _renameSession(BuildContext context, WidgetRef ref, Project project, Session session) async {
+    final controller = TextEditingController(text: session.title);
+    
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename Session'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Session name',
+            hintText: 'Enter new name',
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty && result != session.title) {
+      await ref.read(projectsProvider.notifier).renameSession(project.id, session.id, result);
+      
+      // Update selected project
+      final updatedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+      if (updatedProject != null) {
+        ref.read(selectedProjectProvider.notifier).state = updatedProject;
+      }
+      
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Session renamed to "$result"'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+  
+  /// Copy session conversation to clipboard
+  void _copySessionToClipboard(Session session) {
+    final buffer = StringBuffer();
+    buffer.writeln('# ${session.title}');
+    buffer.writeln('Started: ${_formatDate(session.startedAt)}');
+    buffer.writeln('Duration: ${_formatDuration(session.duration)}');
+    buffer.writeln('');
+    buffer.writeln('---');
+    buffer.writeln('');
+    
+    for (final message in session.conversationHistory) {
+      final isUser = message['isUser'] as bool? ?? false;
+      final content = message['content'] as String? ?? '';
+      final prefix = isUser ? 'You' : 'AI';
+      buffer.writeln('**$prefix:**');
+      buffer.writeln(content);
+      buffer.writeln('');
+    }
+    
+    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${session.conversationHistory.length} messages to clipboard'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+  
+  Future<void> _openSessionChat(BuildContext context, WidgetRef ref, Project project, Session session) async {
+    // Check for and clean up any stale heartbeat from a previously crashed/closed window
+    final status = await _checkAndCleanupHeartbeat(project.path, project.id, ref);
+    
+    if (status == HeartbeatStatus.activeWindow) {
+      // Another window is currently active - warn the user
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('A session is already active, please wait for session to close'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+    
+    if (status == HeartbeatStatus.cleanedUp) {
+      // Refresh project to get latest state after cleanup
+      final refreshedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+      if (refreshedProject != null) {
+        ref.read(selectedProjectProvider.notifier).state = refreshedProject;
+        // Re-fetch the session from refreshed project
+        final refreshedSession = refreshedProject.sessions.firstWhere(
+          (s) => s.id == session.id,
+          orElse: () => session,
+        );
+        // Continue with refreshed data
+        await _openSessionChatInternal(context, ref, refreshedProject, refreshedSession);
+        return;
+      }
+    }
+    
+    await _openSessionChatInternal(context, ref, project, session);
+  }
+  
+  Future<void> _openSessionChatInternal(BuildContext context, WidgetRef ref, Project project, Session session) async {
+    // If session is not active, activate it first
+    if (!session.isActive) {
+      await ref.read(projectsProvider.notifier).activateSession(project.id, session.id);
+      
+      // Update selected project
+      final updatedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+      if (updatedProject != null) {
+        ref.read(selectedProjectProvider.notifier).state = updatedProject;
+        // Use updated project for window
+        _launchAIChatWindow(context, ref, updatedProject);
+      }
+    } else {
+      _launchAIChatWindow(context, ref, project);
+    }
+  }
+  
+  Future<void> _launchAIChatWindow(BuildContext context, WidgetRef ref, Project project) async {
+    // Ensure API keys are loaded before proceeding
+    final notifier = ref.read(aiKeysProvider.notifier);
+    if (!notifier.isLoaded) {
+      // Wait a moment for keys to load (async init)
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    
+    final aiKeys = ref.read(aiKeysProvider);
+    
+    if (!aiKeys.hasAnyKey) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No API keys configured. Please add keys in Settings first.')),
+        );
+      }
+      return;
+    }
+    
+    final windowArgs = {
+      ...project.toJson(),
+      'apiKeys': {
+        'openai': aiKeys.openAI,
+        'anthropic': aiKeys.anthropic,
+        'gemini': aiKeys.gemini,
+      },
+    };
+    
+    final window = await DesktopMultiWindow.createWindow(jsonEncode(windowArgs));
+    window
+      ..setTitle('AI Chat - ${project.name}')
+      ..setFrame(const Offset(100, 100) & const Size(800, 600))
+      ..center()
+      ..show();
   }
 
   String _formatDate(DateTime date) {
@@ -1359,7 +2027,33 @@ class _SessionsTab extends ConsumerWidget {
   }
 
   Future<void> _startNewSession(BuildContext context, WidgetRef ref, Project project) async {
-    final controller = TextEditingController(text: 'Session ${project.sessions.length + 1}');
+    // Check for and clean up any stale heartbeat first
+    final status = await _checkAndCleanupHeartbeat(project.path, project.id, ref);
+    
+    if (status == HeartbeatStatus.activeWindow) {
+      // Another window is currently active - warn the user
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('A session is already active, please wait for session to close'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+    
+    Project currentProject = project;
+    if (status == HeartbeatStatus.cleanedUp) {
+      // Refresh project to get latest state after cleanup
+      final refreshedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+      if (refreshedProject != null) {
+        ref.read(selectedProjectProvider.notifier).state = refreshedProject;
+        currentProject = refreshedProject;
+      }
+    }
+    
+    final controller = TextEditingController(text: 'Session ${currentProject.sessions.length + 1}');
     
     final result = await showDialog<String>(
       context: context,
@@ -1388,18 +2082,24 @@ class _SessionsTab extends ConsumerWidget {
 
     if (result != null && result.isNotEmpty && context.mounted) {
       // Create session using provider
-      await ref.read(projectsProvider.notifier).createSession(project.id, result);
+      await ref.read(projectsProvider.notifier).createSession(currentProject.id, result);
       
       // Update selected project
-      final updatedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+      final updatedProject = ref.read(projectsProvider.notifier).getProject(currentProject.id);
       if (updatedProject != null) {
         ref.read(selectedProjectProvider.notifier).state = updatedProject;
       }
+      
+      // Restart timer for live updates
+      _startTimerIfNeeded();
       
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Session "$result" started')),
         );
+        
+        // Auto-open the chat window for the new session
+        _launchAIChatWindow(context, ref, ref.read(selectedProjectProvider)!);
       }
     }
   }

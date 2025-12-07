@@ -3,7 +3,7 @@
 /// Purpose: Entry point for separate AI chat windows spawned via desktop_multi_window
 /// Key Components:
 ///   - Window initialization (no Hive - API keys passed via arguments)
-///   - Custom dark title bar (matches app theme)
+///   - Custom title bar with save-before-close functionality
 ///   - AIChatScreen integration in isolated window process
 ///   - Project data reconstruction from JSON arguments
 /// 
@@ -40,11 +40,16 @@ class AIChatWindow extends StatefulWidget {
 }
 
 class _AIChatWindowState extends State<AIChatWindow> {
+  late final AIKeys _apiKeys;
+  late final Project _project;
+  final GlobalKey<dynamic> _chatScreenKey = GlobalKey();
+  
   @override
-  Widget build(BuildContext context) {
+  void initState() {
+    super.initState();
     // Extract API keys from arguments (passed from main window)
     final apiKeysData = widget.args['apiKeys'] as Map<String, dynamic>?;
-    final apiKeys = AIKeys(
+    _apiKeys = AIKeys(
       openAI: apiKeysData?['openai'] as String?,
       anthropic: apiKeysData?['anthropic'] as String?,
       gemini: apiKeysData?['gemini'] as String?,
@@ -52,12 +57,33 @@ class _AIChatWindowState extends State<AIChatWindow> {
     
     // Reconstruct project from args (excluding apiKeys)
     final projectData = Map<String, dynamic>.from(widget.args)..remove('apiKeys');
-    final project = Project.fromJson(projectData);
-
+    _project = Project.fromJson(projectData);
+    
+    print('DEBUG AIChatWindow: API keys loaded - OpenAI: ${_apiKeys.openAI != null}, Anthropic: ${_apiKeys.anthropic != null}, Gemini: ${_apiKeys.gemini != null}');
+  }
+  
+  /// Save the session and then close the window
+  Future<void> _saveAndClose() async {
+    print('DEBUG: Close button pressed - stopping session first');
+    try {
+      final state = _chatScreenKey.currentState;
+      if (state != null) {
+        await state.stopSessionOnClose();
+      }
+    } catch (e) {
+      print('DEBUG: Error stopping session: $e');
+    }
+    
+    // Close the window
+    await widget.controller.close();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
     return ProviderScope(
       overrides: [
         // Override aiKeysProvider with pre-loaded keys (no Hive access needed)
-        aiKeysProvider.overrideWith((ref) => AIKeysNotifier.withKeys(apiKeys)),
+        aiKeysProvider.overrideWith((ref) => AIKeysNotifier.withKeys(_apiKeys)),
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
@@ -73,73 +99,59 @@ class _AIChatWindowState extends State<AIChatWindow> {
           color: const Color(0xFF1E1E1E),
           child: Column(
             children: [
-              // Custom dark title bar
+              // Custom title bar with close button that saves session
               Container(
-                height: 48,
+                height: 44,
                 decoration: const BoxDecoration(
                   color: Color(0xFF2D2D2D),
                   border: Border(
-                    bottom: BorderSide(
-                      color: Color(0xFF3D3D3D),
-                      width: 1,
-                    ),
+                    bottom: BorderSide(color: Color(0xFF3D3D3D), width: 1),
                   ),
                 ),
                 child: Row(
                   children: [
                     const SizedBox(width: 12),
-                    // AI Icon
-                    Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        Icon(
-                          Icons.smart_toy,
-                          size: 24,
-                          color: Colors.blue[300],
-                        ),
-                        Positioned(
-                          right: -2,
-                          bottom: -2,
-                          child: Icon(
-                            Icons.settings,
-                            size: 10,
-                            color: Colors.grey[400],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(width: 12),
-                    // Title
+                    Icon(Icons.smart_toy, size: 20, color: Colors.blue[300]),
+                    const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'AI Assistant - ${project.name}',
+                        'AI Assistant - ${_project.name}',
                         style: TextStyle(
                           color: Colors.grey[300],
-                          fontSize: 14,
+                          fontSize: 13,
                           fontWeight: FontWeight.w500,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    // Close & Save button - prominent styling
+                    Container(
+                      margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                      child: FilledButton.icon(
+                        icon: const Icon(Icons.save_outlined, size: 16),
+                        label: const Text('Close & Save'),
+                        onPressed: _saveAndClose,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Colors.blue[700],
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                          minimumSize: const Size(0, 32),
+                          textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
                         ),
                       ),
                     ),
-                    // Close button
-                    IconButton(
-                      icon: Icon(
-                        Icons.close,
-                        size: 20,
-                        color: Colors.grey[400],
-                      ),
-                      onPressed: () {
-                        widget.controller.close();
-                      },
-                      tooltip: 'Close',
-                      hoverColor: Colors.red.withOpacity(0.2),
-                    ),
-                    const SizedBox(width: 4),
+                    const SizedBox(width: 8),
                   ],
                 ),
               ),
               // Chat content
               Expanded(
-                child: AIChatScreen(project: project, isInSeparateWindow: true),
+                child: AIChatScreen(
+                  key: _chatScreenKey,
+                  project: _project, 
+                  isInSeparateWindow: true,
+                  initialApiKeys: _apiKeys,
+                ),
               ),
             ],
           ),

@@ -13,10 +13,14 @@
 ///   - ai_provider: API key and settings management
 ///   - project_provider: Project and session state
 /// 
-/// Last Modified: December 5, 2025
+/// Last Modified: December 6, 2025
 library;
 
+import 'dart:async';
+import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/project.dart';
 import '../services/ai_service.dart';
@@ -27,49 +31,171 @@ import '../providers/project_provider.dart';
 class AIChatScreen extends ConsumerStatefulWidget {
   final Project project;
   final bool isInSeparateWindow;
+  final VoidCallback? onCloseRequested;
+  final AIKeys? initialApiKeys; // Pass directly for separate windows
 
-  const AIChatScreen({super.key, required this.project, this.isInSeparateWindow = false});
+  const AIChatScreen({
+    super.key, 
+    required this.project, 
+    this.isInSeparateWindow = false,
+    this.onCloseRequested,
+    this.initialApiKeys,
+  });
 
   @override
   ConsumerState<AIChatScreen> createState() => _AIChatScreenState();
 }
 
-class _AIChatScreenState extends ConsumerState<AIChatScreen> {
+class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBindingObserver {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
   bool _isLoading = false;
+  Timer? _heartbeatTimer;
 
   @override
   void initState() {
     super.initState();
+    // Listen to app lifecycle to save on close
+    WidgetsBinding.instance.addObserver(this);
     _loadConversationHistory();
+    
+    // Start heartbeat for separate windows so main window can detect if we crash
+    if (widget.isInSeparateWindow) {
+      _startHeartbeat();
+    }
+  }
+  
+  /// Write a heartbeat file periodically so main window knows we're alive
+  void _startHeartbeat() {
+    _writeHeartbeat(); // Write immediately
+    _heartbeatTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      _writeHeartbeat();
+    });
+  }
+  
+  Future<void> _writeHeartbeat() async {
+    try {
+      final file = File('${widget.project.path}${Platform.pathSeparator}.abs_session_heartbeat');
+      await file.writeAsString(DateTime.now().toIso8601String());
+    } catch (e) {
+      // Ignore errors - heartbeat is best effort
+    }
+  }
+  
+  Future<void> _deleteHeartbeat() async {
+    try {
+      final file = File('${widget.project.path}${Platform.pathSeparator}.abs_session_heartbeat');
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      // Ignore errors
+    }
   }
 
   @override
   void dispose() {
+    print('DEBUG: AIChatScreen dispose called, isInSeparateWindow=${widget.isInSeparateWindow}');
+    _heartbeatTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    // Auto-stop session when window closes (only for separate windows)
+    if (widget.isInSeparateWindow) {
+      // Note: Can't await in dispose, but we try anyway
+      _deleteHeartbeat();
+      stopSessionOnClose();
+    }
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+  
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    print('DEBUG: App lifecycle state changed to $state');
+    // Save session when app is paused, inactive, or detached
+    if (widget.isInSeparateWindow && 
+        (state == AppLifecycleState.paused || 
+         state == AppLifecycleState.inactive ||
+         state == AppLifecycleState.detached)) {
+      print('DEBUG: Saving session due to lifecycle change');
+      stopSessionOnClose();
+    }
+  }
+  
+  /// Stop the active session when the chat window is closed
+  /// Saves final state to file so main window can sync it
+  /// Made public so it can be called from parent window before close
+  Future<void> stopSessionOnClose() async {
+    try {
+      // Cancel heartbeat first so main window doesn't re-complete the session
+      _heartbeatTimer?.cancel();
+      await _deleteHeartbeat();
+      
+      // Find active session
+      final activeSession = widget.project.sessions.firstWhere(
+        (s) => s.isActive,
+        orElse: () => Session(projectId: '', title: ''),
+      );
+      
+      if (activeSession.projectId.isEmpty) {
+        print('DEBUG: No active session to stop');
+        return;
+      }
+      
+      // Update session to completed with end time
+      final updatedSession = activeSession.copyWith(
+        status: SessionStatus.completed,
+        endedAt: DateTime.now(),
+        conversationHistory: _messages.map((m) => m.toJson()).toList(),
+      );
+      
+      // Update project with stopped session
+      final updatedSessions = widget.project.sessions.map((s) {
+        return s.id == updatedSession.id ? updatedSession : s;
+      }).toList();
+      
+      final updatedProject = widget.project.copyWith(
+        sessions: updatedSessions,
+        lastModified: DateTime.now(),
+      );
+      
+      // Save to file
+      await _saveToFile(updatedProject);
+      print('DEBUG: Auto-stopped session on window close');
+    } catch (e) {
+      print('DEBUG: Failed to auto-stop session: $e');
+    }
   }
 
   /// Load conversation history from active session
   /// 
   /// Finds the active session in the project and populates
   /// the messages list with previous conversation.
+  /// For separate windows, also tries to load from JSON file.
   /// 
   /// Side Effects:
   ///   - Clears current messages
-  ///   - Populates _messages from session.conversationHistory
+  ///   - Populates _messages from session.conversationHistory or file
   ///   - Scrolls to bottom after loading
-  void _loadConversationHistory() {
+  Future<void> _loadConversationHistory() async {
+    // In separate windows, try to load from file first (may have newer data)
+    if (widget.isInSeparateWindow) {
+      await _loadFromFile();
+      return;
+    }
+    
     // Load conversation from active session if exists
-    final activeSession = widget.project.sessions.firstWhere(
+    _loadFromActiveSession(widget.project);
+  }
+  
+  void _loadFromActiveSession(Project project) {
+    final activeSession = project.sessions.firstWhere(
       (s) => s.isActive,
       orElse: () => Session(projectId: '', title: ''),
     );
 
-    if (activeSession.projectId.isNotEmpty) {
+    if (activeSession.projectId.isNotEmpty && activeSession.conversationHistory.isNotEmpty) {
       setState(() {
         _messages.clear();
         _messages.addAll(
@@ -85,6 +211,30 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
       });
     }
   }
+  
+  /// Load conversation history from JSON file (for separate windows)
+  Future<void> _loadFromFile() async {
+    try {
+      final file = File('${widget.project.path}${Platform.pathSeparator}.abs_chat_history.json');
+      if (await file.exists()) {
+        final contents = await file.readAsString();
+        final json = jsonDecode(contents) as Map<String, dynamic>;
+        final savedProject = Project.fromJson(json);
+        
+        // Find the active session and load its history
+        _loadFromActiveSession(savedProject);
+        print('DEBUG: Loaded chat history from file');
+      } else {
+        // File doesn't exist, load from project args (which contains conversation history)
+        print('DEBUG: No chat history file, loading from project args');
+        _loadFromActiveSession(widget.project);
+      }
+    } catch (e) {
+      print('DEBUG: Failed to load chat history from file: $e');
+      // Fall back to project data
+      _loadFromActiveSession(widget.project);
+    }
+  }
 
   /// Save current conversation to active session
   /// 
@@ -93,7 +243,8 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
   /// 
   /// Side Effects:
   ///   - Updates session in project sessions list
-  ///   - Saves project to Hive via ProjectsNotifier
+  ///   - Saves project to Hive via ProjectsNotifier (main window only)
+  ///   - Saves to .abs_chat_history.json file (separate windows)
   ///   - Updates selectedProjectProvider state
   /// 
   /// Does nothing if no active session exists
@@ -121,10 +272,25 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
       lastModified: DateTime.now(),
     );
 
-    await ref.read(projectsProvider.notifier).updateProject(updatedProject);
-    
-    // Update selected project
-    ref.read(selectedProjectProvider.notifier).state = updatedProject;
+    // In separate windows, we can't access Hive, so save to a file
+    if (widget.isInSeparateWindow) {
+      await _saveToFile(updatedProject);
+    } else {
+      await ref.read(projectsProvider.notifier).updateProject(updatedProject);
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+    }
+  }
+  
+  /// Save project data to a JSON file for persistence from separate windows
+  Future<void> _saveToFile(Project project) async {
+    try {
+      final file = File('${project.path}${Platform.pathSeparator}.abs_chat_history.json');
+      final json = jsonEncode(project.toJson());
+      await file.writeAsString(json);
+      print('DEBUG: Saved chat history to ${file.path}');
+    } catch (e) {
+      print('DEBUG: Failed to save chat history: $e');
+    }
   }
 
   @override
@@ -147,6 +313,12 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
           ],
         ),
         actions: [
+          // Copy all button
+          IconButton(
+            icon: const Icon(Icons.copy_all),
+            onPressed: _messages.isEmpty ? null : _copyEntireConversation,
+            tooltip: 'Copy entire conversation',
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _messages.isEmpty ? null : _clearChat,
@@ -373,7 +545,21 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
   Widget _buildSuggestionChip(String text) {
     return ActionChip(
       label: Text(text),
-      onPressed: () {
+      onPressed: () async {
+        // Use passed keys for separate windows, provider for main window
+        final aiKeys = widget.isInSeparateWindow && widget.initialApiKeys != null
+            ? widget.initialApiKeys!
+            : ref.read(aiKeysProvider);
+        
+        if (!aiKeys.hasAnyKey) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('API keys not ready. Please try again.')),
+            );
+          }
+          return;
+        }
+        
         _messageController.text = text;
         _sendMessage();
       },
@@ -381,14 +567,16 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
   }
 
   Widget _buildMessagesList() {
-    return ListView.builder(
-      controller: _scrollController,
-      padding: const EdgeInsets.all(16),
-      itemCount: _messages.length,
-      itemBuilder: (context, index) {
-        final message = _messages[index];
-        return _buildMessageBubble(message);
-      },
+    return SelectionArea(
+      child: ListView.builder(
+        controller: _scrollController,
+        padding: const EdgeInsets.all(16),
+        itemCount: _messages.length,
+        itemBuilder: (context, index) {
+          final message = _messages[index];
+          return _buildMessageBubble(message);
+        },
+      ),
     );
   }
 
@@ -397,52 +585,70 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
     
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.7,
-        ),
-        margin: const EdgeInsets.only(bottom: 16),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isUser
-              ? Theme.of(context).colorScheme.primaryContainer
-              : Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  isUser ? Icons.person : Icons.smart_toy,
-                  size: 16,
-                  color: isUser
-                      ? Theme.of(context).colorScheme.onPrimaryContainer
-                      : Theme.of(context).colorScheme.onSurface,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  isUser ? 'You' : 'AI Assistant',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
+      child: GestureDetector(
+        onSecondaryTapUp: (details) => _showMessageContextMenu(context, details.globalPosition, message),
+        child: Container(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.7,
+          ),
+          margin: const EdgeInsets.only(bottom: 16),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: isUser
+                ? Theme.of(context).colorScheme.primaryContainer
+                : Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    isUser ? Icons.person : Icons.smart_toy,
+                    size: 16,
                     color: isUser
                         ? Theme.of(context).colorScheme.onPrimaryContainer
                         : Theme.of(context).colorScheme.onSurface,
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SelectableText(
-              message.content,
-              style: TextStyle(
-                color: isUser
-                    ? Theme.of(context).colorScheme.onPrimaryContainer
-                    : Theme.of(context).colorScheme.onSurface,
+                  const SizedBox(width: 8),
+                  Text(
+                    isUser ? 'You' : 'AI Assistant',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: isUser
+                          ? Theme.of(context).colorScheme.onPrimaryContainer
+                          : Theme.of(context).colorScheme.onSurface,
+                    ),
+                  ),
+                  const Spacer(),
+                  // Copy button
+                  InkWell(
+                    onTap: () => _copyMessageToClipboard(message),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.copy,
+                        size: 14,
+                        color: isUser
+                            ? Theme.of(context).colorScheme.onPrimaryContainer.withOpacity(0.6)
+                            : Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ),
+              const SizedBox(height: 8),
+              Text(
+                message.content,
+                style: TextStyle(
+                  color: isUser
+                      ? Theme.of(context).colorScheme.onPrimaryContainer
+                      : Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
             if (message.fileUpdates.isNotEmpty) ...[
               const SizedBox(height: 12),
               const Divider(),
@@ -479,6 +685,95 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
             ],
           ],
         ),
+        ),
+      ),
+    );
+  }
+  
+  /// Copy a single message to clipboard
+  void _copyMessageToClipboard(ChatMessage message) {
+    final prefix = message.isUser ? 'You: ' : 'AI: ';
+    Clipboard.setData(ClipboardData(text: '$prefix${message.content}'));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Message copied to clipboard'),
+        duration: Duration(seconds: 1),
+      ),
+    );
+  }
+  
+  /// Copy entire conversation to clipboard
+  void _copyEntireConversation() {
+    final buffer = StringBuffer();
+    for (final message in _messages) {
+      final prefix = message.isUser ? 'You: ' : 'AI: ';
+      buffer.writeln('$prefix${message.content}');
+      buffer.writeln();
+    }
+    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${_messages.length} messages to clipboard'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+  
+  /// Show context menu for a message
+  void _showMessageContextMenu(BuildContext context, Offset position, ChatMessage message) {
+    final messageIndex = _messages.indexOf(message);
+    showMenu(
+      context: context,
+      position: RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy),
+      items: [
+        PopupMenuItem(
+          onTap: () => _copyMessageToClipboard(message),
+          child: const Row(
+            children: [
+              Icon(Icons.copy, size: 18),
+              SizedBox(width: 8),
+              Text('Copy this message'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          onTap: () => _copyMessagesFromIndex(messageIndex),
+          child: const Row(
+            children: [
+              Icon(Icons.content_copy, size: 18),
+              SizedBox(width: 8),
+              Text('Copy from here to end'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          onTap: _copyEntireConversation,
+          child: const Row(
+            children: [
+              Icon(Icons.select_all, size: 18),
+              SizedBox(width: 8),
+              Text('Copy entire conversation'),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+  
+  /// Copy messages from a specific index to the end
+  void _copyMessagesFromIndex(int startIndex) {
+    final buffer = StringBuffer();
+    for (int i = startIndex; i < _messages.length; i++) {
+      final message = _messages[i];
+      final prefix = message.isUser ? 'You: ' : 'AI: ';
+      buffer.writeln('$prefix${message.content}');
+      buffer.writeln();
+    }
+    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Copied ${_messages.length - startIndex} messages to clipboard'),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -543,6 +838,21 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
     final message = _messageController.text.trim();
     if (message.isEmpty || _isLoading) return;
 
+    // Check API keys are available before sending
+    // Use passed keys for separate windows, provider for main window
+    final aiKeys = widget.isInSeparateWindow && widget.initialApiKeys != null
+        ? widget.initialApiKeys!
+        : ref.read(aiKeysProvider);
+    print('DEBUG _sendMessage: API keys check - OpenAI: ${aiKeys.openAI != null}, hasAnyKey: ${aiKeys.hasAnyKey}, usedInitial: ${widget.initialApiKeys != null}');
+    if (!aiKeys.hasAnyKey) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No API keys available. Please configure in Settings.')),
+        );
+      }
+      return;
+    }
+
     _messageController.clear();
     
     setState(() {
@@ -554,7 +864,6 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
 
     try {
       final aiService = ref.read(aiServiceProvider);
-      final aiKeys = ref.read(aiKeysProvider);
       final selectedProvider = ref.read(selectedAIProviderProvider);
 
       // Set API keys
@@ -564,18 +873,26 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
         gemini: aiKeys.gemini,
       );
 
-      // Get project context with file tree
-      // Note: In separate windows, we need to read files directly since Hive is locked by main window
+      // Get project context with ALL file contents pre-loaded
+      // This gives the AI full access to every file in the project
       final fileService = ref.read(fileServiceProvider);
       final fullProjectData = await fileService.exportFullProjectForAI(widget.project.path);
       
       final projectContext = fullProjectData['governanceFiles'] as Map<String, String>? ?? {};
+      final allFileContents = fullProjectData['allFileContents'] as Map<String, String>? ?? {};
       final fileTree = fullProjectData['fileTree'] as List<String>? ?? [];
+      
+      // Add ALL project files to context (not just governance files)
+      // This way AI always has full access to read/modify any file
+      for (var entry in allFileContents.entries) {
+        projectContext['[FILE] ${entry.key}'] = entry.value;
+      }
 
       // DEBUG: Check what we're sending
       print("DEBUG Project Context:");
       print("  Project Path: ${widget.project.path}");
-      print("  Governance Files: ${projectContext.keys.toList()}");
+      print("  Governance Files: ${projectContext.keys.where((k) => !k.startsWith('[FILE]')).toList()}");
+      print("  Project Files Loaded: ${allFileContents.length}");
       print("  File Tree Count: ${fileTree.length}");
       if (projectContext.containsKey('TODO.md')) {
         print("  TODO.md preview: ${projectContext['TODO.md']?.substring(0, 100)}...");

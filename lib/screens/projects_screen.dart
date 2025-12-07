@@ -14,7 +14,7 @@ class ProjectsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('ABS Projects'),
+        title: const Text('ABS Studio'),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),

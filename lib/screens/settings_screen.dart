@@ -56,11 +56,49 @@ class SettingsScreen extends ConsumerWidget {
               ),
               ListTile(
                 leading: const Icon(Icons.verified),
-                title: const Text('Get ABS Certified'),
-                subtitle: const Text('Learn more about certification'),
-                trailing: const Icon(Icons.open_in_new),
+                title: const Text('ABS Studio'),
+                subtitle: const Text('About AI-Based Software methodology'),
+                trailing: const Icon(Icons.chevron_right),
                 onTap: () {
-                  // TODO: Open certification page
+                  showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Row(
+                        children: [
+                          Icon(Icons.verified, color: Colors.blue),
+                          SizedBox(width: 8),
+                          Text('About ABS Studio'),
+                        ],
+                      ),
+                      content: const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'AI-Based Software (ABS) Platform',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'ABS is a methodology for AI-assisted software development that uses governance files to maintain context and consistency across AI interactions.',
+                          ),
+                          SizedBox(height: 16),
+                          Text('Key Features:', style: TextStyle(fontWeight: FontWeight.bold)),
+                          SizedBox(height: 4),
+                          Text('• Governance file management'),
+                          Text('• Multi-provider AI support'),
+                          Text('• Session tracking'),
+                          Text('• File operations via AI'),
+                        ],
+                      ),
+                      actions: [
+                        FilledButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: const Text('Close'),
+                        ),
+                      ],
+                    ),
+                  );
                 },
               ),
               ListTile(

@@ -1,5 +1,5 @@
 name: abs_platform
-description: "AI Bootstrap System Platform - Universal AI Governance and Project Management"
+description: "ABS Studio - The Governance Framework with a GUI. AI Bootstrap Systems in an app."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

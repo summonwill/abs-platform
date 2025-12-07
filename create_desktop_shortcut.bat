@@ -1,8 +1,8 @@
 @echo off
-REM Creates a desktop shortcut to ABS Platform launcher
+REM Creates a desktop shortcut to ABS Studio launcher
 
 set SCRIPT_DIR=%~dp0
-set SHORTCUT_PATH=%USERPROFILE%\Desktop\ABS Platform.lnk
+set SHORTCUT_PATH=%USERPROFILE%\Desktop\ABS Studio.lnk
 set TARGET_PATH=%SCRIPT_DIR%launch_abs.bat
 set ICON_PATH=%SCRIPT_DIR%build\windows\x64\runner\Release\abs_platform.exe
 

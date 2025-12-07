@@ -10,6 +10,7 @@
 ///   - desktop_multi_window: Multi-window support
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -75,7 +76,7 @@ void main(List<String> args) async {
       backgroundColor: Colors.transparent,
       skipTaskbar: false,
       titleBarStyle: TitleBarStyle.normal,
-      title: 'AI Bootstrap System',
+      title: 'ABS Studio',
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {

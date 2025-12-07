@@ -249,17 +249,30 @@ class FileService {
   /// Read any file in the project (not just governance files)
   Future<String?> readProjectFile(String projectPath, String relativePath) async {
     try {
-      final file = File('$projectPath${Platform.pathSeparator}$relativePath');
-      if (!await file.exists()) return null;
+      // Normalize path separators for Windows
+      final normalizedPath = relativePath.replaceAll('/', Platform.pathSeparator);
+      final fullPath = '$projectPath${Platform.pathSeparator}$normalizedPath';
+      
+      print('DEBUG readProjectFile: $fullPath');
+      
+      final file = File(fullPath);
+      if (!await file.exists()) {
+        print('  File does not exist');
+        return null;
+      }
       
       // Check file size to avoid loading huge files
       final size = await file.length();
       if (size > 1024 * 1024) { // 1MB limit
+        print('  File too large: ${(size / 1024).toStringAsFixed(1)} KB');
         return '[File too large: ${(size / 1024).toStringAsFixed(1)} KB]';
       }
       
-      return await file.readAsString();
+      final content = await file.readAsString();
+      print('  SUCCESS: Read ${content.length} chars');
+      return content;
     } catch (e) {
+      print('  ERROR: $e');
       return '[Error reading file: $e]';
     }
   }
@@ -274,8 +287,32 @@ class FileService {
   /// Returns: true if successful, false otherwise
   /// 
   /// Side Effects: Creates parent directories if they don't exist
+  /// If relativePath ends with /, creates a directory instead of a file
   Future<bool> writeProjectFile(String projectPath, String relativePath, String content) async {
     try {
+      // Check if this is a folder creation request (path ends with /)
+      if (relativePath.endsWith('/')) {
+        // This is a folder creation request
+        final folderPath = relativePath.substring(0, relativePath.length - 1);
+        final normalizedPath = folderPath.replaceAll('/', Platform.pathSeparator);
+        final fullPath = '$projectPath${Platform.pathSeparator}$normalizedPath';
+        
+        print('DEBUG writeProjectFile (FOLDER):');
+        print('  projectPath: $projectPath');
+        print('  relativePath: $relativePath');
+        print('  fullPath: $fullPath');
+        
+        final dir = Directory(fullPath);
+        if (!await dir.exists()) {
+          await dir.create(recursive: true);
+          print('  SUCCESS: Folder created');
+        } else {
+          print('  Folder already exists');
+        }
+        return true;
+      }
+      
+      // Regular file creation
       // Normalize path separators for Windows
       final normalizedPath = relativePath.replaceAll('/', Platform.pathSeparator);
       final fullPath = '$projectPath${Platform.pathSeparator}$normalizedPath';
@@ -466,13 +503,88 @@ class FileService {
     return files;
   }
 
-  /// Export full project context including file tree (for AI)
+  /// Export full project context including ALL file contents (for AI)
+  /// 
+  /// Loads the complete project into memory so AI has full access to:
+  /// - All governance files
+  /// - All project files and their contents
+  /// - Complete file tree structure
+  /// 
+  /// This is called on EVERY message, so new files/folders created during
+  /// the session are automatically included in subsequent messages.
+  /// 
+  /// Files larger than 100KB are skipped to prevent context overflow.
+  /// Binary files are skipped.
   Future<Map<String, dynamic>> exportFullProjectForAI(String projectPath) async {
+    print('DEBUG exportFullProjectForAI: Scanning project for all files...');
+    
     final governanceFiles = await exportForAI(projectPath);
     final fileList = await getProjectFileList(projectPath);
     
+    print('DEBUG exportFullProjectForAI: Found ${fileList.length} total files in project');
+    
+    // Load ALL file contents (not just governance files)
+    final allFileContents = <String, String>{};
+    
+    // Text file extensions we can read
+    final textExtensions = [
+      '.md', '.txt', '.json', '.yaml', '.yml', '.xml', '.html', '.css', '.js', '.ts',
+      '.py', '.dart', '.java', '.kt', '.swift', '.c', '.cpp', '.h', '.hpp', '.cs',
+      '.rb', '.php', '.go', '.rs', '.sh', '.bat', '.ps1', '.sql', '.csv', '.ini',
+      '.cfg', '.conf', '.toml', '.env', '.gitignore', '.dockerfile', '.vue', '.jsx', '.tsx',
+    ];
+    
+    int totalSize = 0;
+    const maxTotalSize = 500 * 1024; // 500KB total limit for all files
+    const maxFileSize = 100 * 1024;  // 100KB per file limit
+    
+    for (final filePath in fileList) {
+      // Skip governance files (already in governanceFiles map)
+      if (filePath == 'AI_RULES_AND_BEST_PRACTICES.md' ||
+          filePath == 'TODO.md' ||
+          filePath == 'SESSION_NOTES.md' ||
+          filePath == 'AI_CONTEXT_INDEX.md') {
+        continue;
+      }
+      
+      // Check if it's a text file we can read
+      final extension = filePath.contains('.') 
+          ? '.${filePath.split('.').last.toLowerCase()}'
+          : '';
+      
+      if (!textExtensions.contains(extension) && extension.isNotEmpty) {
+        print('DEBUG exportFullProjectForAI: Skipping binary file: $filePath');
+        continue; // Skip binary files
+      }
+      
+      // Read the file
+      final content = await readProjectFile(projectPath, filePath);
+      if (content != null && 
+          !content.startsWith('[Error') && 
+          !content.startsWith('[File too large')) {
+        
+        // Check size limits
+        if (content.length > maxFileSize) {
+          allFileContents[filePath] = '[File truncated - ${(content.length / 1024).toStringAsFixed(1)}KB] ${content.substring(0, 1000)}...';
+          totalSize += 1000;
+          print('DEBUG exportFullProjectForAI: Loaded (truncated): $filePath');
+        } else if (totalSize + content.length <= maxTotalSize) {
+          allFileContents[filePath] = content;
+          totalSize += content.length;
+          print('DEBUG exportFullProjectForAI: Loaded: $filePath (${content.length} chars)');
+        } else {
+          // Stop loading more files if we hit total limit
+          print('DEBUG exportFullProjectForAI: Total size limit reached, skipping remaining files');
+          break;
+        }
+      }
+    }
+    
+    print('DEBUG exportFullProjectForAI: Loaded ${allFileContents.length} project files (${(totalSize / 1024).toStringAsFixed(1)}KB)');
+    
     return {
       'governanceFiles': governanceFiles,
+      'allFileContents': allFileContents,
       'fileTree': fileList,
       'projectPath': projectPath,
     };

@@ -100,57 +100,42 @@ class AIService {
       {
         'role': 'system',
         'content': '''You are an AI assistant helping with project management using the AI Bootstrap System (ABS).
-The user has provided their project governance files and file structure. Help them manage their project.
+The user has provided their project governance files, file structure, and relevant file contents. Help them manage their project.
 
 🔴 MANDATORY FILE/FOLDER OPERATION FORMAT 🔴
 When the user asks you to CREATE, UPDATE, or DELETE ANY file or folder, you MUST use this EXACT format:
 
-FOR CREATING FILES - Start your response with:
+FOR CREATING FILES:
 === CREATE: path/to/filename.ext ===
 (file content goes here)
 
-FOR CREATING FOLDERS - Start your response with:
+FOR CREATING FOLDERS (trailing slash):
 === CREATE: path/to/foldername/ ===
-(Note the trailing slash for folders - no content needed)
 
-FOR UPDATING FILES - Start your response with:
+FOR UPDATING FILES:
 === UPDATE: path/to/filename.ext ===
-(new file content goes here)
+(COMPLETE file content with your modifications integrated)
 
-FOR DELETING FILES - Start your response with:
+FOR DELETING FILES:
 === DELETE: path/to/filename.ext ===
 
-FOR DELETING FOLDERS - Start your response with:
+FOR DELETING FOLDERS (trailing slash):
 === DELETE: path/to/foldername/ ===
-(Note the trailing slash for folders - this will delete the folder and ALL its contents)
+
+⚠️ CRITICAL FOR UPDATES:
+- You will see file contents in the context labeled as [FILE] path/to/file
+- When updating, include the ENTIRE file content with your changes integrated
+- The system REPLACES the whole file - do NOT just show changes
+- Preserve ALL existing content unless the user specifically asks to remove something
 
 RULES:
-1. ALWAYS start with the === marker when doing file/folder operations
-2. NO text before the === marker
-3. Include the FULL path relative to project root
-4. Use trailing slash (/) for folders
-5. After the operation, you can add explanation
+1. Start with === marker for file operations (no text before it)
+2. Use the FULL path relative to project root
+3. Use trailing slash (/) for folders
+4. For UPDATE, include COMPLETE file with changes merged in
+5. Add explanation after --- separator
 
-EXAMPLE REQUEST: "create a docs folder with a readme.md file"
-CORRECT RESPONSE:
-=== CREATE: docs/ ===
-
-=== CREATE: docs/readme.md ===
-# Documentation
-
-Welcome to the docs folder.
-
----
-I've created the docs folder with a readme.md file.
-
-EXAMPLE REQUEST: "delete the test folder"
-CORRECT RESPONSE:
-=== DELETE: test/ ===
-
----
-I've deleted the test folder and all its contents.
-
-If you cannot perform an operation for any reason, explain why clearly.'''
+You have FULL access to read, write, modify, and delete ANY file or folder in the project directory and all subdirectories.'''
       },
       if (contextMessage.isNotEmpty) {
         'role': 'system',
@@ -231,24 +216,16 @@ If you cannot perform an operation for any reason, explain why clearly.'''
           'model': model,
           'max_tokens': 4096,
           'system': 'You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
-              'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
-              'maintain session notes, and work with any project files.\n\n'
-              'CRITICAL - FILE/FOLDER OPERATIONS: When the user asks you to create, update, or delete files or folders, you MUST use this exact format:\n\n'
-              'To CREATE a new file:\n'
-              '=== CREATE: path/to/filename.ext ===\n'
-              'file content here\n\n'
-              'To CREATE a folder (use trailing slash):\n'
-              '=== CREATE: path/to/foldername/ ===\n\n'
-              'To UPDATE an existing file:\n'
-              '=== UPDATE: path/to/filename.ext ===\n'
-              'updated content\n\n'
-              'To DELETE a file:\n'
-              '=== DELETE: path/to/filename.ext ===\n\n'
-              'To DELETE a folder (use trailing slash - deletes folder and ALL contents):\n'
-              '=== DELETE: path/to/foldername/ ===\n\n'
-              'IMPORTANT: Do NOT add explanatory text before the === markers. Start your response with === if creating/updating/deleting.\n'
-              'Use trailing slash (/) for folder operations to distinguish from files.\n\n'
-              'If asked about files you haven\'t seen, ask if they\'d like you to read them.\n\n$contextMessage',
+              'The user has provided their project governance files, file structure, and relevant file contents.\n\n'
+              'FILE/FOLDER OPERATIONS - Use this EXACT format:\n\n'
+              'CREATE file: === CREATE: path/to/file.ext ===\\n(content)\n'
+              'CREATE folder: === CREATE: path/to/folder/ ===\n'
+              'UPDATE file: === UPDATE: path/to/file.ext ===\\n(COMPLETE content with changes)\n'
+              'DELETE file: === DELETE: path/to/file.ext ===\n'
+              'DELETE folder: === DELETE: path/to/folder/ ===\n\n'
+              'CRITICAL: For UPDATE, include the ENTIRE file with your modifications. System REPLACES the whole file.\n'
+              'File contents appear as [FILE] path/to/file in context. Use trailing slash for folders.\n'
+              'You have FULL access to all files in the project.\n\n$contextMessage',
           'messages': messages,
         },
       );
@@ -278,24 +255,16 @@ If you cannot perform an operation for any reason, explain why clearly.'''
         'parts': [
           {
             'text': 'System: You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
-                'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
-                'maintain session notes, and work with any project files.\n\n'
-                'CRITICAL - FILE/FOLDER OPERATIONS: When the user asks you to create, update, or delete files or folders, you MUST use this exact format:\n\n'
-                'To CREATE a new file:\n'
-                '=== CREATE: path/to/filename.ext ===\n'
-                'file content here\n\n'
-                'To CREATE a folder (use trailing slash):\n'
-                '=== CREATE: path/to/foldername/ ===\n\n'
-                'To UPDATE an existing file:\n'
-                '=== UPDATE: path/to/filename.ext ===\n'
-                'updated content\n\n'
-                'To DELETE a file:\n'
-                '=== DELETE: path/to/filename.ext ===\n\n'
-                'To DELETE a folder (use trailing slash - deletes folder and ALL contents):\n'
-                '=== DELETE: path/to/foldername/ ===\n\n'
-                'IMPORTANT: Do NOT add explanatory text before the === markers. Start your response with === if creating/updating/deleting.\n'
-                'Use trailing slash (/) for folder operations to distinguish from files.\n\n'
-                'If asked about files you haven\'t seen, ask if they\'d like you to read them.\n\n$contextMessage'
+                'The user has provided their project governance files, file structure, and relevant file contents.\n\n'
+                'FILE/FOLDER OPERATIONS - Use this EXACT format:\n\n'
+                'CREATE file: === CREATE: path/to/file.ext ===\\n(content)\n'
+                'CREATE folder: === CREATE: path/to/folder/ ===\n'
+                'UPDATE file: === UPDATE: path/to/file.ext ===\\n(COMPLETE content with changes)\n'
+                'DELETE file: === DELETE: path/to/file.ext ===\n'
+                'DELETE folder: === DELETE: path/to/folder/ ===\n\n'
+                'CRITICAL: For UPDATE, include the ENTIRE file with your modifications. System REPLACES the whole file.\n'
+                'File contents appear as [FILE] path/to/file in context. Use trailing slash for folders.\n'
+                'You have FULL access to all files in the project.\n\n$contextMessage'
           }
         ]
       },
@@ -377,20 +346,71 @@ If you cannot perform an operation for any reason, explain why clearly.'''
     print('  Response length: ${aiResponse.length}');
     print('  First 300 chars: ${aiResponse.substring(0, aiResponse.length < 300 ? aiResponse.length : 300)}');
     
-    // Pattern for CREATE/UPDATE operations (require content after)
-    final createUpdatePattern = RegExp(
-      r'===\s*(CREATE|UPDATE):\s*([^\n]+?)\s*===\s*\n([\s\S]*?)(?=\n===|---|\Z)',
+    // First, extract folder creation operations (paths ending in /)
+    // These have no content and should be processed separately
+    final folderPattern = RegExp(
+      r'===\s*CREATE:\s*([^\r\n]+?/)\s*===',
       caseSensitive: false,
       multiLine: true,
     );
     
-    final createUpdateMatches = createUpdatePattern.allMatches(aiResponse);
+    final folderMatches = folderPattern.allMatches(aiResponse);
+    print('  Folder CREATE matches found: ${folderMatches.length}');
+    
+    for (var match in folderMatches) {
+      final filepath = match.group(1)!.trim();
+      print('  Found: CREATE:$filepath (folder)');
+      updates['CREATE:$filepath'] = '';
+    }
+    
+    // Pattern for CREATE/UPDATE operations (require content after)
+    // Only match files (paths NOT ending in /)
+    // Captures content until: next === marker at start of line, --- at start of line, or end of string
+    // Handles both \r\n (Windows) and \n (Unix) line endings
+    final createUpdatePattern = RegExp(
+      r'===\s*(CREATE|UPDATE):\s*([^\r\n/]+?(?:\.[a-zA-Z0-9]+))\s*===\s*\r?\n([\s\S]*?)(?=\r?\n===|\r?\n---)',
+      caseSensitive: false,
+      multiLine: true,
+    );
+    
+    var createUpdateMatches = createUpdatePattern.allMatches(aiResponse).toList();
+    
+    // If no matches with separator, try matching to end of string (for responses without --- separator)
+    if (createUpdateMatches.isEmpty) {
+      final endOfStringPattern = RegExp(
+        r'===\s*(CREATE|UPDATE):\s*([^\r\n]+?(?:\.[a-zA-Z0-9]+))\s*===\s*\r?\n([\s\S]+)',
+        caseSensitive: false,
+        multiLine: true,
+      );
+      createUpdateMatches = endOfStringPattern.allMatches(aiResponse).toList();
+      if (createUpdateMatches.isNotEmpty) {
+        print('  (Used fallback end-of-string pattern)');
+      }
+    }
+    
     print('  CREATE/UPDATE matches found: ${createUpdateMatches.length}');
     
     for (var match in createUpdateMatches) {
       final operation = match.group(1)!.toUpperCase();
       final filepath = match.group(2)!.trim();
-      final content = match.group(3)?.trim() ?? '';
+      var rawContent = match.group(3) ?? '';
+      var content = rawContent.trim();
+      
+      // DEBUG: Show raw vs trimmed
+      print('  Raw content length: ${rawContent.length}, Trimmed: ${content.length}');
+      print('  Raw content repr: ${rawContent.replaceAll('\n', '\\n').replaceAll('\r', '\\r')}');
+      
+      // Remove === END === marker if present
+      content = content.replaceAll(RegExp(r'\s*===\s*END\s*===\s*$', caseSensitive: false), '').trim();
+      
+      // Remove --- separator and any AI explanation text after it
+      // The AI often adds "---" followed by an explanation of what it did
+      final dashSeparatorIndex = content.indexOf(RegExp(r'\r?\n---\s*\r?\n'));
+      if (dashSeparatorIndex != -1) {
+        content = content.substring(0, dashSeparatorIndex).trim();
+        print('  Stripped AI explanation after --- separator');
+      }
+      
       print('  Found: $operation:$filepath (content: ${content.length} chars)');
       updates['$operation:$filepath'] = content;
     }

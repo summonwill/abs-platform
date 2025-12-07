@@ -10,6 +10,7 @@
 ///   - uuid: Unique identifier generation
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'package:uuid/uuid.dart';
 
@@ -138,12 +139,13 @@ class Session {
   final String id;
   final String projectId;
   final String title;
-  final DateTime startedAt;
+  final DateTime startedAt;  // When current active period started
   final DateTime? endedAt;
   final String? notes;
   final List<String> filesModified;
   final SessionStatus status;
   final List<Map<String, dynamic>> conversationHistory;
+  final Duration accumulatedDuration;  // Total time from previous open/close cycles
 
   Session({
     String? id,
@@ -155,36 +157,60 @@ class Session {
     List<String>? filesModified,
     this.status = SessionStatus.inProgress,
     List<Map<String, dynamic>>? conversationHistory,
+    this.accumulatedDuration = Duration.zero,
   })  : id = id ?? const Uuid().v4(),
         startedAt = startedAt ?? DateTime.now(),
         filesModified = filesModified ?? [],
         conversationHistory = conversationHistory ?? [];
 
+  /// Calculate total session duration (accumulated + current period)
+  /// 
+  /// For completed sessions: accumulated + (endedAt - startedAt)
+  /// For active sessions: accumulated + (now - startedAt)
   Duration get duration {
+    // If session is completed but endedAt is missing (corrupted data),
+    // return just accumulated duration
+    if (status == SessionStatus.completed && endedAt == null) {
+      return accumulatedDuration;
+    }
+    // Calculate current period duration
     final end = endedAt ?? DateTime.now();
-    return end.difference(startedAt);
+    final currentPeriod = end.difference(startedAt);
+    
+    // Guard against negative durations (corrupted data where endedAt < startedAt)
+    if (currentPeriod.isNegative) {
+      return accumulatedDuration;
+    }
+    
+    // Return accumulated + current
+    return accumulatedDuration + currentPeriod;
   }
 
   bool get isActive => status == SessionStatus.inProgress;
 
+  /// Use [clearEndedAt] = true to explicitly set endedAt to null
   Session copyWith({
     String? title,
+    DateTime? startedAt,
     DateTime? endedAt,
+    bool clearEndedAt = false,
     String? notes,
     List<String>? filesModified,
     SessionStatus? status,
     List<Map<String, dynamic>>? conversationHistory,
+    Duration? accumulatedDuration,
   }) {
     return Session(
       id: id,
       projectId: projectId,
       title: title ?? this.title,
-      startedAt: startedAt,
-      endedAt: endedAt ?? this.endedAt,
+      startedAt: startedAt ?? this.startedAt,
+      endedAt: clearEndedAt ? null : (endedAt ?? this.endedAt),
       notes: notes ?? this.notes,
       filesModified: filesModified ?? this.filesModified,
       status: status ?? this.status,
       conversationHistory: conversationHistory ?? this.conversationHistory,
+      accumulatedDuration: accumulatedDuration ?? this.accumulatedDuration,
     );
   }
 
@@ -199,6 +225,7 @@ class Session {
       'filesModified': filesModified,
       'status': status.toString(),
       'conversationHistory': conversationHistory,
+      'accumulatedDurationMs': accumulatedDuration.inMilliseconds,
     };
   }
 
@@ -222,6 +249,7 @@ class Session {
       conversationHistory: json['conversationHistory'] != null
           ? List<Map<String, dynamic>>.from(json['conversationHistory'])
           : [],
+      accumulatedDuration: Duration(milliseconds: json['accumulatedDurationMs'] as int? ?? 0),
     );
   }
 }
