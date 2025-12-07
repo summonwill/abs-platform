@@ -21,11 +21,30 @@
 - [x] Create Inno Setup installer script with setup wizard
 - [x] Installer config import on first launch
 
-### Code Signing Certificate (BEFORE PRO LAUNCH)
+### Code Signing & App Store Distribution (BEFORE PRO LAUNCH)
+
+**Windows** (~$350-600/year)
 - [ ] Research EV Code Signing providers (SSL.com, Sectigo, DigiCert)
-- [ ] Purchase EV certificate (~$350-600/year) - instant SmartScreen trust
+- [ ] Purchase EV certificate - instant SmartScreen trust
 - [ ] Integrate signing into build/installer process
-- [ ] Required for enterprise/professional distribution
+
+**Apple - macOS & iOS** ($99/year - one subscription covers both)
+- [ ] Enroll in Apple Developer Program
+- [ ] Set up code signing certificates in Xcode
+- [ ] Configure notarization for macOS distribution
+- [ ] Prepare App Store Connect for iOS submission
+
+**Android** (Free)
+- [ ] Generate release keystore (`keytool -genkey`)
+- [ ] Configure `key.properties` for release builds
+- [ ] Enroll in Google Play Console ($25 one-time) if targeting Play Store
+- [ ] Set up Play App Signing
+
+**Linux** (Free)
+- [ ] Generate GPG signing key for package signatures
+- [ ] Document verification process for users
+
+**Total Annual Cost**: ~$450-700/year for full cross-platform signed distribution
 
 ### Session Notes Auto-Update System ✅ (Session 7 - COMPLETED)
 - [x] "Update Notes" button in chat header for manual updates
@@ -183,7 +202,7 @@ User clicks "Close & Save" → Smart logic (forceUpdate: false):
 
 ---
 
-**Last Updated**: December 7, 2025 (Session 7)
+**Last Updated**: December 7, 2025 (Session 8)
 - `openpyxl` - Read/write Excel files (.xlsx)
 - `pandas` - Data analysis with Excel support
 - `xlwings` - Full Excel/VBA automation (requires Excel)
