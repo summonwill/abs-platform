@@ -60,6 +60,10 @@ class _FileEditorWindowState extends State<FileEditorWindow> with WidgetsBinding
   late final ScrollController _verticalScroller;
   late final ScrollController _horizontalScroller;
   
+  // File watcher for live updates
+  Stream<FileSystemEvent>? _fileWatcher;
+  bool _isExternalChange = false;
+  
   static const platform = MethodChannel('window_events');
 
   void _logToFile(String message) {
@@ -116,6 +120,9 @@ class _FileEditorWindowState extends State<FileEditorWindow> with WidgetsBinding
         }
       });
       
+      // Set up file watcher for live updates
+      _setupFileWatcher();
+      
       // Guard against setState after dispose
       if (!mounted) return;
       setState(() => _isInitialized = true);
@@ -123,6 +130,72 @@ class _FileEditorWindowState extends State<FileEditorWindow> with WidgetsBinding
       print('FileEditor: Initialization failed: $e');
       print('Stack trace: $stackTrace');
       rethrow;
+    }
+  }
+  
+  void _setupFileWatcher() {
+    try {
+      final fullPath = '$_projectPath${Platform.pathSeparator}$_fileName'.replaceAll('/', Platform.pathSeparator);
+      final file = File(fullPath);
+      
+      if (file.existsSync()) {
+        _fileWatcher = file.parent.watch(events: FileSystemEvent.modify);
+        _fileWatcher!.listen((event) {
+          // Check if the modified file is our file
+          final eventPath = event.path.replaceAll('/', Platform.pathSeparator);
+          if (eventPath == fullPath && !_isExternalChange) {
+            _handleExternalFileChange();
+          }
+        });
+        _logToFile('FileEditor: File watcher set up for $fullPath');
+      }
+    } catch (e) {
+      _logToFile('FileEditor: Failed to set up file watcher: $e');
+    }
+  }
+  
+  Future<void> _handleExternalFileChange() async {
+    // Don't reload if we just saved (avoid loop)
+    if (_isSaving) return;
+    
+    try {
+      final fullPath = '$_projectPath${Platform.pathSeparator}$_fileName'.replaceAll('/', Platform.pathSeparator);
+      final file = File(fullPath);
+      
+      if (file.existsSync()) {
+        final newContent = await file.readAsString();
+        
+        // Only update if content actually changed
+        if (newContent != _currentContent) {
+          _logToFile('FileEditor: External change detected, reloading...');
+          
+          if (!mounted) return;
+          
+          setState(() {
+            _isExternalChange = true;
+            _content = newContent;
+            _currentContent = newContent;
+            _controller.text = newContent;
+            _isModified = false;
+            _isExternalChange = false;
+          });
+          
+          // Note: re_editor cursor resets on text change, acceptable for external updates
+          
+          // Show notification
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('File updated from disk'),
+                duration: Duration(seconds: 2),
+                backgroundColor: Colors.blue,
+              ),
+            );
+          }
+        }
+      }
+    } catch (e) {
+      _logToFile('FileEditor: Error reloading file: $e');
     }
   }
 

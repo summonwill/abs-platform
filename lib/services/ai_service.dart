@@ -102,12 +102,16 @@ class AIService {
         'content': '''You are an AI assistant helping with project management using the AI Bootstrap System (ABS).
 The user has provided their project governance files and file structure. Help them manage their project.
 
-🔴 MANDATORY FILE OPERATION FORMAT 🔴
-When the user asks you to CREATE, UPDATE, or DELETE ANY file, you MUST use this EXACT format:
+🔴 MANDATORY FILE/FOLDER OPERATION FORMAT 🔴
+When the user asks you to CREATE, UPDATE, or DELETE ANY file or folder, you MUST use this EXACT format:
 
 FOR CREATING FILES - Start your response with:
 === CREATE: path/to/filename.ext ===
 (file content goes here)
+
+FOR CREATING FOLDERS - Start your response with:
+=== CREATE: path/to/foldername/ ===
+(Note the trailing slash for folders - no content needed)
 
 FOR UPDATING FILES - Start your response with:
 === UPDATE: path/to/filename.ext ===
@@ -116,27 +120,37 @@ FOR UPDATING FILES - Start your response with:
 FOR DELETING FILES - Start your response with:
 === DELETE: path/to/filename.ext ===
 
+FOR DELETING FOLDERS - Start your response with:
+=== DELETE: path/to/foldername/ ===
+(Note the trailing slash for folders - this will delete the folder and ALL its contents)
+
 RULES:
-1. ALWAYS start with the === marker when doing file operations
+1. ALWAYS start with the === marker when doing file/folder operations
 2. NO text before the === marker
-3. Include the FULL file path relative to project root
-4. After the file content, you can add explanation
+3. Include the FULL path relative to project root
+4. Use trailing slash (/) for folders
+5. After the operation, you can add explanation
 
-EXAMPLE REQUEST: "create a test.md file"
+EXAMPLE REQUEST: "create a docs folder with a readme.md file"
 CORRECT RESPONSE:
-=== CREATE: test.md ===
-# Test File
+=== CREATE: docs/ ===
 
-This is a test file.
+=== CREATE: docs/readme.md ===
+# Documentation
+
+Welcome to the docs folder.
 
 ---
-I've created the test.md file for you.
+I've created the docs folder with a readme.md file.
 
-WRONG RESPONSE:
-Sure! I'll create that file for you...
-(This is wrong because it has text before ===)
+EXAMPLE REQUEST: "delete the test folder"
+CORRECT RESPONSE:
+=== DELETE: test/ ===
 
-If you cannot create a file for any reason, explain why clearly.'''
+---
+I've deleted the test folder and all its contents.
+
+If you cannot perform an operation for any reason, explain why clearly.'''
       },
       if (contextMessage.isNotEmpty) {
         'role': 'system',
@@ -219,22 +233,21 @@ If you cannot create a file for any reason, explain why clearly.'''
           'system': 'You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
               'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
               'maintain session notes, and work with any project files.\n\n'
-              'CRITICAL - FILE OPERATIONS: When the user asks you to create, update, or delete files, you MUST use this exact format:\n\n'
+              'CRITICAL - FILE/FOLDER OPERATIONS: When the user asks you to create, update, or delete files or folders, you MUST use this exact format:\n\n'
               'To CREATE a new file:\n'
-              '=== CREATE: filename.ext ===\n'
+              '=== CREATE: path/to/filename.ext ===\n'
               'file content here\n\n'
+              'To CREATE a folder (use trailing slash):\n'
+              '=== CREATE: path/to/foldername/ ===\n\n'
               'To UPDATE an existing file:\n'
-              '=== UPDATE: filename.ext ===\n'
+              '=== UPDATE: path/to/filename.ext ===\n'
               'updated content\n\n'
               'To DELETE a file:\n'
-              '=== DELETE: filename.ext ===\n\n'
-              'IMPORTANT: Do NOT add explanatory text before the === markers. Start your response with === if creating/updating/deleting a file.\n'
-              'For governance files (TODO.md, SESSION_NOTES.md, AI_RULES_AND_BEST_PRACTICES.md, AI_CONTEXT_INDEX.md), you can also use: === FILENAME.md ===\n\n'
-              'Example - User: "create test.txt with hello world"\n'
-              'Your response should start with:\n'
-              '=== CREATE: test.txt ===\n'
-              'hello world\n\n'
-              'Then you can add explanation after.\n\n'
+              '=== DELETE: path/to/filename.ext ===\n\n'
+              'To DELETE a folder (use trailing slash - deletes folder and ALL contents):\n'
+              '=== DELETE: path/to/foldername/ ===\n\n'
+              'IMPORTANT: Do NOT add explanatory text before the === markers. Start your response with === if creating/updating/deleting.\n'
+              'Use trailing slash (/) for folder operations to distinguish from files.\n\n'
               'If asked about files you haven\'t seen, ask if they\'d like you to read them.\n\n$contextMessage',
           'messages': messages,
         },
@@ -267,22 +280,21 @@ If you cannot create a file for any reason, explain why clearly.'''
             'text': 'System: You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
                 'The user has provided their project governance files and file structure. Help them manage their project, update TODO items, '
                 'maintain session notes, and work with any project files.\n\n'
-                'CRITICAL - FILE OPERATIONS: When the user asks you to create, update, or delete files, you MUST use this exact format:\n\n'
+                'CRITICAL - FILE/FOLDER OPERATIONS: When the user asks you to create, update, or delete files or folders, you MUST use this exact format:\n\n'
                 'To CREATE a new file:\n'
-                '=== CREATE: filename.ext ===\n'
+                '=== CREATE: path/to/filename.ext ===\n'
                 'file content here\n\n'
+                'To CREATE a folder (use trailing slash):\n'
+                '=== CREATE: path/to/foldername/ ===\n\n'
                 'To UPDATE an existing file:\n'
-                '=== UPDATE: filename.ext ===\n'
+                '=== UPDATE: path/to/filename.ext ===\n'
                 'updated content\n\n'
                 'To DELETE a file:\n'
-                '=== DELETE: filename.ext ===\n\n'
-                'IMPORTANT: Do NOT add explanatory text before the === markers. Start your response with === if creating/updating/deleting a file.\n'
-                'For governance files (TODO.md, SESSION_NOTES.md, AI_RULES_AND_BEST_PRACTICES.md, AI_CONTEXT_INDEX.md), you can also use: === FILENAME.md ===\n\n'
-                'Example - User: "create test.txt with hello world"\n'
-                'Your response should start with:\n'
-                '=== CREATE: test.txt ===\n'
-                'hello world\n\n'
-                'Then you can add explanation after.\n\n'
+                '=== DELETE: path/to/filename.ext ===\n\n'
+                'To DELETE a folder (use trailing slash - deletes folder and ALL contents):\n'
+                '=== DELETE: path/to/foldername/ ===\n\n'
+                'IMPORTANT: Do NOT add explanatory text before the === markers. Start your response with === if creating/updating/deleting.\n'
+                'Use trailing slash (/) for folder operations to distinguish from files.\n\n'
                 'If asked about files you haven\'t seen, ask if they\'d like you to read them.\n\n$contextMessage'
           }
         ]

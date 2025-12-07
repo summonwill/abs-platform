@@ -26,8 +26,9 @@ import '../providers/project_provider.dart';
 /// AI chat screen with conversation history and context awareness
 class AIChatScreen extends ConsumerStatefulWidget {
   final Project project;
+  final bool isInSeparateWindow;
 
-  const AIChatScreen({super.key, required this.project});
+  const AIChatScreen({super.key, required this.project, this.isInSeparateWindow = false});
 
   @override
   ConsumerState<AIChatScreen> createState() => _AIChatScreenState();
@@ -658,15 +659,24 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
                 }
                 break;
               case 'DELETE':
-                success = await fileService.deleteProjectFile(
-                  widget.project.path,
-                  filepath,
-                );
+                // Check if it's a folder (ends with /) or a file
+                final isFolder = filepath.endsWith('/');
+                if (isFolder) {
+                  success = await fileService.deleteProjectFolder(
+                    widget.project.path,
+                    filepath,
+                  );
+                } else {
+                  success = await fileService.deleteProjectFile(
+                    widget.project.path,
+                    filepath,
+                  );
+                }
                 if (success) {
                   appliedUpdates[filepath] = '[DELETED]';
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Deleted: $filepath')),
+                      SnackBar(content: Text('Deleted: $filepath${isFolder ? ' (folder)' : ''}')),
                     );
                   }
                 }
@@ -691,15 +701,18 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> {
         
         // Try to refresh the project's file list so UI updates
         // This will fail in separate windows (no Hive access) but that's OK
-        try {
-          final updatedProject = await ref.read(projectsProvider.notifier).refreshProjectFiles(widget.project.id);
-          if (updatedProject != null) {
-            // Also update selectedProjectProvider so project_detail_screen refreshes
-            ref.read(selectedProjectProvider.notifier).state = updatedProject;
+        // Skip refresh in separate windows to avoid Hive errors
+        if (!widget.isInSeparateWindow) {
+          try {
+            final updatedProject = await ref.read(projectsProvider.notifier).refreshProjectFiles(widget.project.id);
+            if (updatedProject != null) {
+              // Also update selectedProjectProvider so project_detail_screen refreshes
+              ref.read(selectedProjectProvider.notifier).state = updatedProject;
+            }
+          } catch (e) {
+            // Expected in separate windows - file operations still work, just can't update main window
+            print('Note: Could not refresh main window file list: $e');
           }
-        } catch (e) {
-          // Expected in separate windows - file operations still work, just can't update main window
-          print('Note: Could not refresh main window file list (expected in separate windows): $e');
         }
         
         setState(() {

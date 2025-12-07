@@ -42,6 +42,9 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
   StreamSubscription<FileSystemEvent>? _fileWatcher;
   Timer? _debounceTimer;
   String? _watchingPath;
+  
+  // Static flag to temporarily pause file watching during delete operations
+  static bool pauseFileWatching = false;
 
   @override
   void dispose() {
@@ -61,14 +64,28 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
     try {
       final directory = Directory(projectPath);
       if (directory.existsSync()) {
-        _fileWatcher = directory.watch(events: FileSystemEvent.all).listen((event) {
-          // Only react to .md files
-          if (event.path.endsWith('.md')) {
+        // Watch recursively to catch changes in subfolders
+        _fileWatcher = directory.watch(events: FileSystemEvent.all, recursive: true).listen((event) {
+          // Skip if file watching is paused (during delete operations)
+          if (pauseFileWatching) return;
+          
+          // React to common file types that AI might create/edit
+          final path = event.path.toLowerCase();
+          if (path.endsWith('.md') || 
+              path.endsWith('.py') || 
+              path.endsWith('.txt') ||
+              path.endsWith('.json') ||
+              path.endsWith('.yaml') ||
+              path.endsWith('.yml') ||
+              path.endsWith('.csv') ||
+              path.endsWith('.bat') ||
+              path.endsWith('.sh') ||
+              path.endsWith('.ps1')) {
             print('DEBUG FileWatcher: ${event.type} - ${event.path}');
             _debouncedRefresh();
           }
         });
-        print('DEBUG: File watcher set up for $projectPath');
+        print('DEBUG: File watcher set up for $projectPath (recursive)');
       }
     } catch (e) {
       print('DEBUG: Could not set up file watcher: $e');
@@ -527,105 +544,725 @@ class _InfoChip extends StatelessWidget {
   }
 }
 
-class _FilesTab extends ConsumerWidget {
+class _FilesTab extends ConsumerStatefulWidget {
   final Project project;
 
   const _FilesTab({required this.project});
+
+  @override
+  ConsumerState<_FilesTab> createState() => _FilesTabState();
+}
+
+class _FilesTabState extends ConsumerState<_FilesTab> {
+  // Current directory path relative to project root (empty string = project root)
+  String _currentPath = '';
   
-  Future<void> _refreshFiles(BuildContext context, WidgetRef ref) async {
-    final updatedProject = await ref.read(projectsProvider.notifier).refreshProjectFiles(project.id);
+  // Cache of directory contents
+  Map<String, List<FileSystemEntity>> _directoryCache = {};
+  bool _isLoading = false;
+  
+  // File watcher for auto-refresh
+  StreamSubscription<FileSystemEvent>? _fileWatcher;
+  Timer? _debounceTimer;
+  
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentDirectory();
+    _setupFileWatcher();
+  }
+  
+  @override
+  void dispose() {
+    _fileWatcher?.cancel();
+    _debounceTimer?.cancel();
+    super.dispose();
+  }
+  
+  void _setupFileWatcher() {
+    try {
+      final directory = Directory(widget.project.path);
+      if (directory.existsSync()) {
+        _fileWatcher = directory.watch(events: FileSystemEvent.all, recursive: true).listen((event) {
+          // Skip if file watching is paused (during delete operations)
+          if (_ProjectDetailScreenState.pauseFileWatching) return;
+          
+          print('DEBUG FilesTab watcher: ${event.type} - ${event.path}');
+          _debouncedReload();
+        });
+        print('DEBUG: FilesTab file watcher set up for ${widget.project.path}');
+      }
+    } catch (e) {
+      print('DEBUG: Could not set up FilesTab file watcher: $e');
+    }
+  }
+  
+  void _debouncedReload() {
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        _directoryCache.clear(); // Clear cache to force reload
+        _loadCurrentDirectory();
+      }
+    });
+  }
+  
+  Future<void> _refreshFiles(BuildContext context) async {
+    final updatedProject = await ref.read(projectsProvider.notifier).refreshProjectFiles(widget.project.id);
     if (updatedProject != null) {
       ref.read(selectedProjectProvider.notifier).state = updatedProject;
+      _directoryCache.clear(); // Clear cache on refresh
+      await _loadCurrentDirectory();
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Found ${updatedProject.governanceFiles.length} files')),
+          SnackBar(content: Text('Files refreshed')),
+        );
+      }
+    }
+  }
+  
+  Future<void> _loadCurrentDirectory() async {
+    if (!mounted) return;
+    setState(() => _isLoading = true);
+    
+    try {
+      final fullPath = _currentPath.isEmpty 
+          ? widget.project.path 
+          : '${widget.project.path}${Platform.pathSeparator}${_currentPath.replaceAll('/', Platform.pathSeparator)}';
+      
+      final directory = Directory(fullPath);
+      
+      if (await directory.exists()) {
+        final entities = await directory.list().toList();
+        
+        // Sort: folders first, then files, alphabetically
+        entities.sort((a, b) {
+          final aIsDir = a is Directory;
+          final bIsDir = b is Directory;
+          if (aIsDir && !bIsDir) return -1;
+          if (!aIsDir && bIsDir) return 1;
+          return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+        });
+        
+        _directoryCache[_currentPath] = entities;
+      }
+    } catch (e) {
+      print('Error loading directory: $e');
+    }
+    
+    if (!mounted) return;
+    setState(() => _isLoading = false);
+  }
+  
+  void _navigateToFolder(String folderName) {
+    setState(() {
+      if (_currentPath.isEmpty) {
+        _currentPath = folderName;
+      } else {
+        _currentPath = '$_currentPath/$folderName';
+      }
+    });
+    _loadCurrentDirectory();
+  }
+  
+  void _navigateUp() {
+    if (_currentPath.isEmpty) return; // Already at root
+    
+    setState(() {
+      final lastSlash = _currentPath.lastIndexOf('/');
+      if (lastSlash == -1) {
+        _currentPath = ''; // Go to root
+      } else {
+        _currentPath = _currentPath.substring(0, lastSlash);
+      }
+    });
+    _loadCurrentDirectory();
+  }
+  
+  void _navigateToRoot() {
+    setState(() {
+      _currentPath = '';
+    });
+    _loadCurrentDirectory();
+  }
+  
+  // Build breadcrumb path segments
+  List<String> _getBreadcrumbs() {
+    if (_currentPath.isEmpty) return [];
+    return _currentPath.split('/');
+  }
+  
+  void _navigateToBreadcrumb(int index) {
+    final breadcrumbs = _getBreadcrumbs();
+    if (index < 0) {
+      _navigateToRoot();
+    } else {
+      setState(() {
+        _currentPath = breadcrumbs.sublist(0, index + 1).join('/');
+      });
+      _loadCurrentDirectory();
+    }
+  }
+  
+  // Show dialog to create a new folder
+  Future<void> _showCreateFolderDialog(BuildContext context) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Create New Folder'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Folder name',
+            hintText: 'Enter folder name',
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty) {
+      await _createFolder(result);
+    }
+  }
+  
+  // Show dialog to create a new file
+  Future<void> _showCreateFileDialog(BuildContext context, String extension) async {
+    final controller = TextEditingController();
+    String selectedExt = extension;
+    
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Create New File'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                autofocus: true,
+                decoration: InputDecoration(
+                  labelText: 'File name',
+                  hintText: extension.isEmpty ? 'filename.ext' : 'filename',
+                  suffixText: selectedExt.isNotEmpty ? selectedExt : null,
+                ),
+                onSubmitted: (value) => Navigator.pop(context, {'name': value, 'ext': selectedExt}),
+              ),
+              if (extension.isEmpty) ...[
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  value: selectedExt.isEmpty ? '.txt' : selectedExt,
+                  decoration: const InputDecoration(labelText: 'File type'),
+                  items: const [
+                    DropdownMenuItem(value: '.txt', child: Text('Text (.txt)')),
+                    DropdownMenuItem(value: '.md', child: Text('Markdown (.md)')),
+                    DropdownMenuItem(value: '.py', child: Text('Python (.py)')),
+                    DropdownMenuItem(value: '.json', child: Text('JSON (.json)')),
+                    DropdownMenuItem(value: '.csv', child: Text('CSV (.csv)')),
+                    DropdownMenuItem(value: '.yaml', child: Text('YAML (.yaml)')),
+                    DropdownMenuItem(value: '.html', child: Text('HTML (.html)')),
+                    DropdownMenuItem(value: '.js', child: Text('JavaScript (.js)')),
+                    DropdownMenuItem(value: '.bat', child: Text('Batch (.bat)')),
+                    DropdownMenuItem(value: '.ps1', child: Text('PowerShell (.ps1)')),
+                  ],
+                  onChanged: (value) => setDialogState(() => selectedExt = value ?? '.txt'),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, {'name': controller.text, 'ext': selectedExt}),
+              child: const Text('Create'),
+            ),
+          ],
+        ),
+      ),
+    );
+    
+    if (result != null && result['name']!.isNotEmpty) {
+      String fileName = result['name']!;
+      final ext = result['ext']!;
+      
+      // Add extension if not already present
+      if (ext.isNotEmpty && !fileName.contains('.')) {
+        fileName = '$fileName$ext';
+      }
+      
+      await _createFile(fileName);
+    }
+  }
+  
+  // Create a new folder in the current directory
+  Future<void> _createFolder(String name) async {
+    try {
+      final relativePath = _currentPath.isEmpty ? name : '$_currentPath/$name';
+      final fullPath = '${widget.project.path}${Platform.pathSeparator}${relativePath.replaceAll('/', Platform.pathSeparator)}';
+      
+      final dir = Directory(fullPath);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Created folder: $name')),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Folder already exists: $name'), backgroundColor: Colors.orange),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error creating folder: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+  
+  // Create a new file in the current directory
+  Future<void> _createFile(String name) async {
+    try {
+      final relativePath = _currentPath.isEmpty ? name : '$_currentPath/$name';
+      final fullPath = '${widget.project.path}${Platform.pathSeparator}${relativePath.replaceAll('/', Platform.pathSeparator)}';
+      
+      final file = File(fullPath);
+      if (!await file.exists()) {
+        // Create with default content based on file type
+        String content = '';
+        if (name.endsWith('.md')) {
+          content = '# ${name.replaceAll('.md', '')}\n\n';
+        } else if (name.endsWith('.py')) {
+          content = '# ${name.replaceAll('.py', '')}\n\n';
+        } else if (name.endsWith('.json')) {
+          content = '{\n  \n}\n';
+        } else if (name.endsWith('.html')) {
+          content = '<!DOCTYPE html>\n<html>\n<head>\n  <title>$name</title>\n</head>\n<body>\n  \n</body>\n</html>\n';
+        }
+        
+        await file.create(recursive: true);
+        await file.writeAsString(content);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Created file: $name')),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('File already exists: $name'), backgroundColor: Colors.orange),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error creating file: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+  
+  // Show context menu for an item (right-click)
+  void _showItemContextMenu(BuildContext context, Offset position, String name, String relativePath, bool isDirectory) {
+    showMenu(
+      context: context,
+      position: RelativeRect.fromLTRB(position.dx, position.dy, position.dx, position.dy),
+      items: [
+        PopupMenuItem(
+          child: ListTile(
+            leading: const Icon(Icons.open_in_new, size: 20),
+            title: Text(isDirectory ? 'Open' : 'Edit'),
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+          ),
+          onTap: () {
+            if (isDirectory) {
+              _navigateToFolder(name);
+            } else {
+              _openFileViewer(context, widget.project, relativePath);
+            }
+          },
+        ),
+        PopupMenuItem(
+          child: ListTile(
+            leading: Icon(Icons.delete, size: 20, color: Colors.red[300]),
+            title: Text('Delete', style: TextStyle(color: Colors.red[300])),
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+          ),
+          onTap: () => _confirmDelete(context, name, relativePath, isDirectory),
+        ),
+      ],
+    );
+  }
+  
+  // Show confirmation dialog before deleting
+  Future<void> _confirmDelete(BuildContext context, String name, String relativePath, bool isDirectory) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete ${isDirectory ? 'Folder' : 'File'}?'),
+        content: Text(
+          isDirectory 
+              ? 'Are you sure you want to delete "$name" and ALL its contents?\n\nThis cannot be undone.'
+              : 'Are you sure you want to delete "$name"?\n\nThis cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      await _deleteItem(relativePath, isDirectory);
+    }
+  }
+  
+  // Delete a file or folder
+  Future<void> _deleteItem(String relativePath, bool isDirectory) async {
+    try {
+      final fileService = FileService();
+      bool success;
+      
+      print('DEBUG _deleteItem: relativePath="$relativePath", isDirectory=$isDirectory');
+      print('DEBUG _deleteItem: projectPath="${widget.project.path}"');
+      
+      // Pause all file watching and cancel watchers to release file handles
+      print('DEBUG _deleteItem: Pausing file watchers...');
+      _ProjectDetailScreenState.pauseFileWatching = true;
+      await _fileWatcher?.cancel();
+      _fileWatcher = null;
+      
+      // Give Windows time to release file handles
+      await Future.delayed(const Duration(milliseconds: 300));
+      
+      if (isDirectory) {
+        success = await fileService.deleteProjectFolder(widget.project.path, relativePath);
+      } else {
+        success = await fileService.deleteProjectFile(widget.project.path, relativePath);
+      }
+      
+      print('DEBUG _deleteItem: success=$success');
+      
+      // Resume file watching
+      print('DEBUG _deleteItem: Resuming file watchers...');
+      _ProjectDetailScreenState.pauseFileWatching = false;
+      _setupFileWatcher();
+      
+      // Reload directory
+      _directoryCache.clear();
+      await _loadCurrentDirectory();
+      
+      if (mounted) {
+        if (success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Deleted: $relativePath')),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to delete: $relativePath'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    } catch (e) {
+      print('DEBUG _deleteItem: ERROR: $e');
+      // Make sure watching is resumed even on error
+      _ProjectDetailScreenState.pauseFileWatching = false;
+      _setupFileWatcher();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     }
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (project.governanceFiles.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.description_outlined,
-              size: 80,
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No governance files found',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: () {
-                // TODO: Generate governance files
-              },
-              icon: const Icon(Icons.add),
-              label: const Text('Generate ABS Files'),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () => _refreshFiles(context, ref),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Refresh Files'),
-            ),
-          ],
-        ),
-      );
-    }
+  Widget build(BuildContext context) {
+    final project = widget.project;
+    final entities = _directoryCache[_currentPath] ?? [];
+    final breadcrumbs = _getBreadcrumbs();
+    final isAtRoot = _currentPath.isEmpty;
 
     return Column(
       children: [
-        // Refresh button at the top
-        Padding(
+        // Toolbar with breadcrumbs and refresh
+        Container(
           padding: const EdgeInsets.all(8.0),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.3),
+            border: Border(
+              bottom: BorderSide(
+                color: Theme.of(context).dividerColor.withOpacity(0.2),
+              ),
+            ),
+          ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              TextButton.icon(
-                onPressed: () => _refreshFiles(context, ref),
-                icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('Refresh'),
+              // Back button
+              IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: isAtRoot ? null : _navigateUp,
+                tooltip: 'Go up',
+              ),
+              // Home button
+              IconButton(
+                icon: const Icon(Icons.home),
+                onPressed: isAtRoot ? null : _navigateToRoot,
+                tooltip: 'Go to project root',
+              ),
+              const SizedBox(width: 8),
+              // Breadcrumb navigation
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      // Project root
+                      InkWell(
+                        onTap: isAtRoot ? null : _navigateToRoot,
+                        borderRadius: BorderRadius.circular(4),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.folder_special,
+                                size: 16,
+                                color: isAtRoot 
+                                    ? Theme.of(context).colorScheme.primary 
+                                    : Colors.amber,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                project.name,
+                                style: TextStyle(
+                                  fontWeight: isAtRoot ? FontWeight.bold : FontWeight.normal,
+                                  color: isAtRoot 
+                                      ? Theme.of(context).colorScheme.primary 
+                                      : null,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      // Breadcrumb segments
+                      for (var i = 0; i < breadcrumbs.length; i++) ...[
+                        const Icon(Icons.chevron_right, size: 16),
+                        InkWell(
+                          onTap: i < breadcrumbs.length - 1 
+                              ? () => _navigateToBreadcrumb(i) 
+                              : null,
+                          borderRadius: BorderRadius.circular(4),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            child: Text(
+                              breadcrumbs[i],
+                              style: TextStyle(
+                                fontWeight: i == breadcrumbs.length - 1 
+                                    ? FontWeight.bold 
+                                    : FontWeight.normal,
+                                color: i == breadcrumbs.length - 1 
+                                    ? Theme.of(context).colorScheme.primary 
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              // Refresh button
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: () => _refreshFiles(context),
+                tooltip: 'Refresh',
+              ),
+              const SizedBox(width: 4),
+              // Create new folder button
+              IconButton(
+                icon: const Icon(Icons.create_new_folder),
+                onPressed: () => _showCreateFolderDialog(context),
+                tooltip: 'New Folder',
+              ),
+              // Create new file button
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.add),
+                tooltip: 'New File',
+                onSelected: (value) => _showCreateFileDialog(context, value),
+                itemBuilder: (context) => [
+                  const PopupMenuItem(value: '.txt', child: Text('Text File (.txt)')),
+                  const PopupMenuItem(value: '.md', child: Text('Markdown (.md)')),
+                  const PopupMenuItem(value: '.py', child: Text('Python (.py)')),
+                  const PopupMenuItem(value: '.json', child: Text('JSON (.json)')),
+                  const PopupMenuItem(value: '.csv', child: Text('CSV (.csv)')),
+                  const PopupMenuItem(value: '', child: Text('Custom...')),
+                ],
               ),
             ],
           ),
         ),
+        // File list
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: project.governanceFiles.length,
-            itemBuilder: (context, index) {
-              final fileName = project.governanceFiles[index];
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  leading: const Icon(Icons.description),
-                  title: Text(fileName),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => _openFileViewer(context, project, fileName),
-                ),
-              );
-            },
-          ),
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : entities.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.folder_open,
+                            size: 64,
+                            color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Empty folder',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ],
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(8),
+                      itemCount: entities.length,
+                      itemBuilder: (context, index) {
+                        final entity = entities[index];
+                        final name = entity.path.split(Platform.pathSeparator).last;
+                        final isDirectory = entity is Directory;
+                        
+                        // Skip hidden files/folders (starting with .)
+                        if (name.startsWith('.')) {
+                          return const SizedBox.shrink();
+                        }
+                        
+                        // Build relative path for this item
+                        final relativePath = _currentPath.isEmpty 
+                            ? name 
+                            : '$_currentPath/$name';
+                        
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 4),
+                          child: InkWell(
+                            onSecondaryTapUp: (details) {
+                              _showItemContextMenu(
+                                context, 
+                                details.globalPosition, 
+                                name, 
+                                relativePath, 
+                                isDirectory,
+                              );
+                            },
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(
+                                isDirectory ? Icons.folder : _getFileIcon(name),
+                                color: isDirectory ? Colors.amber : _getFileIconColor(name),
+                              ),
+                              title: Text(
+                                name,
+                                style: TextStyle(
+                                  fontWeight: isDirectory ? FontWeight.w500 : FontWeight.normal,
+                                ),
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  // Delete button
+                                  IconButton(
+                                    icon: Icon(Icons.delete_outline, size: 18, color: Colors.red[300]),
+                                    onPressed: () => _confirmDelete(context, name, relativePath, isDirectory),
+                                    tooltip: 'Delete',
+                                  ),
+                                  Icon(
+                                    isDirectory ? Icons.chevron_right : Icons.open_in_new,
+                                    size: 20,
+                                  ),
+                                ],
+                              ),
+                              onTap: () {
+                                if (isDirectory) {
+                                  _navigateToFolder(name);
+                                } else {
+                                  _openFileViewer(context, project, relativePath);
+                                }
+                              },
+                            ),
+                          ),
+                        );
+                      },
+                    ),
         ),
       ],
     );
   }
+  
+  IconData _getFileIcon(String fileName) {
+    final ext = fileName.toLowerCase();
+    if (ext.endsWith('.py')) return Icons.code;
+    if (ext.endsWith('.md')) return Icons.description;
+    if (ext.endsWith('.json') || ext.endsWith('.yaml') || ext.endsWith('.yml')) return Icons.data_object;
+    if (ext.endsWith('.bat') || ext.endsWith('.sh') || ext.endsWith('.ps1')) return Icons.terminal;
+    if (ext.endsWith('.csv')) return Icons.table_chart;
+    if (ext.endsWith('.txt')) return Icons.article;
+    if (ext.endsWith('.html') || ext.endsWith('.css') || ext.endsWith('.js')) return Icons.web;
+    return Icons.insert_drive_file;
+  }
+  
+  Color _getFileIconColor(String fileName) {
+    final ext = fileName.toLowerCase();
+    if (ext.endsWith('.py')) return Colors.blue;
+    if (ext.endsWith('.md')) return Colors.orange;
+    if (ext.endsWith('.json')) return Colors.yellow.shade700;
+    if (ext.endsWith('.bat') || ext.endsWith('.sh') || ext.endsWith('.ps1')) return Colors.green;
+    if (ext.endsWith('.csv')) return Colors.teal;
+    return Colors.grey;
+  }
 
-  Future<void> _openFileViewer(BuildContext context, Project project, String fileName) async {
+  Future<void> _openFileViewer(BuildContext context, Project project, String filePath) async {
     final fileService = FileService();
-    final content = await fileService.readGovernanceFile(project.path, fileName);
+    // Use readProjectFile which handles relative paths including subfolders
+    final content = await fileService.readProjectFile(project.path, filePath);
     
     if (content == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to read $fileName')),
+          SnackBar(content: Text('Failed to read $filePath')),
         );
       }
       return;
@@ -634,14 +1271,14 @@ class _FilesTab extends ConsumerWidget {
     // Open file in separate floating window with re_editor
     final fileData = jsonEncode({
       'windowType': 'file_editor',
-      'fileName': fileName,
+      'fileName': filePath,
       'projectPath': project.path,
       'content': content,
     });
     
     final window = await DesktopMultiWindow.createWindow(fileData);
     window
-      ..setTitle('$fileName - ${project.name}')
+      ..setTitle('$filePath - ${project.name}')
       ..setFrame(const Offset(100, 100) & const Size(1000, 700))
       ..center()
       ..show();

@@ -1,5 +1,81 @@
 # Session Notes - ABS Platform
 
+## Session 4: December 6, 2025 - Complete File Management System
+
+### Objectives
+- Implement AI file operations (CREATE, UPDATE, DELETE)
+- Add subfolder support for all operations
+- Enable live file updates when AI modifies files
+- Add user file/folder management UI
+- Fix OneDrive compatibility issues
+
+### Work Completed
+
+#### 1. AI File Operations ✅
+- **CREATE**: AI can create new files with `=== CREATE: path/file.txt ===`
+- **UPDATE**: AI can modify existing files with `=== UPDATE: path/file.txt ===`
+- **DELETE**: AI can delete files with `=== DELETE: path/file.txt ===`
+- **Folder DELETE**: AI can delete folders with `=== DELETE: folder/ ===` (trailing slash)
+- All three providers (OpenAI, Anthropic, Gemini) updated with file operation prompts
+
+#### 2. Subfolder Support ✅
+- AI can create files in nested directories (auto-creates parent folders)
+- Directory tree displayed in file explorer
+- Proper path handling for Windows (separator conversion)
+
+#### 3. Live File Updates ✅
+- FileSystemWatcher with recursive monitoring
+- Auto-refresh file list when files change on disk
+- Debounced refresh to avoid rapid updates
+- Works in both main window and file editor
+
+#### 4. Directory Navigation ✅
+- Expandable folder tree view
+- Breadcrumb navigation
+- Back button and Home button
+- Sandboxed to project root (can't navigate outside)
+
+#### 5. User File/Folder Management ✅
+- Create file button with extension templates
+- Create folder button
+- Delete file/folder with confirmation dialog
+- Right-click context menu support
+
+#### 6. OneDrive Compatibility Fix ✅
+- **Problem**: Dart's `Directory.delete()` fails on OneDrive-synced folders
+- **Solution**: Use Windows `rmdir /s /q` command via Process.run
+- Also use `del /f /q` for files
+- Exit code checking for success/failure
+
+#### 7. Separate Window Hive Error Fix ✅
+- **Problem**: AI chat in separate window throws HiveError when refreshing projects
+- **Root Cause**: Sub-windows are separate processes without Hive initialization
+- **Solution**: Added `isInSeparateWindow` flag to AIChatScreen widget
+- Skip provider refresh calls in separate windows
+
+### Technical Discoveries
+
+**OneDrive Locking**: OneDrive keeps sync locks on files/folders that prevent Dart's standard delete operations. Windows native commands (rmdir, del) bypass these locks.
+
+**Separate Process Architecture**: Each desktop_multi_window sub-window is a separate OS process. Global state (Hive, providers) is not shared. File operations work because they use direct filesystem access.
+
+**FileSystemWatcher Coordination**: When deleting items, pause watchers temporarily to avoid race conditions, then resume and refresh manually.
+
+### Files Modified
+- `lib/screens/ai_chat_screen.dart` - File operation parsing, isInSeparateWindow flag
+- `lib/screens/project_detail_screen.dart` - File explorer UI, directory navigation
+- `lib/services/ai_service.dart` - AI prompts for file operations
+- `lib/services/file_service.dart` - Windows-native delete commands
+- `lib/windows/ai_chat_window.dart` - Pass isInSeparateWindow flag
+
+### Next Steps
+1. Add syntax highlighting to file editor
+2. Implement Python script execution
+3. Add Excel file operations
+4. Implement VBA extraction/injection
+
+---
+
 ## Session 3: December 5-6, 2025 - File Editor with Separate Windows
 
 ### Objectives

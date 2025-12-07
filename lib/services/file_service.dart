@@ -114,8 +114,8 @@ class FileService {
   /// Parameters:
   ///   - projectPath: Absolute path to project folder
   /// 
-  /// Returns: List of governance file names that exist in the project
-  ///   Checks for standard ABS files plus any other .md files in the root
+  /// Returns: List of relative file paths that exist in the project
+  ///   Includes standard ABS files plus all supported files in subfolders
   Future<List<String>> detectGovernanceFiles(String projectPath) async {
     final files = <String>[];
     
@@ -135,22 +135,44 @@ class FileService {
       }
     }
     
-    // Also detect any other .md files in the project root that AI may have created
+    // Supported file extensions for AI-created files
+    final supportedExtensions = [
+      '.md', '.txt', '.py', '.json', '.yaml', '.yml', 
+      '.csv', '.bat', '.sh', '.ps1', '.vbs', '.js', '.html', '.css',
+    ];
+    
+    // Folders to exclude from scanning
+    final excludedFolders = {
+      '.git', 'node_modules', '__pycache__', '.venv', 'venv',
+      '.idea', '.vscode', 'build', 'dist', '.dart_tool',
+    };
+    
+    // Recursively scan all subfolders for supported files
     try {
       final dir = Directory(projectPath);
       if (await dir.exists()) {
-        await for (final entity in dir.list()) {
+        await for (final entity in dir.list(recursive: true)) {
           if (entity is File) {
-            final fileName = entity.path.split(Platform.pathSeparator).last;
-            // Add any .md files not already in the list
-            if (fileName.endsWith('.md') && !files.contains(fileName)) {
-              files.add(fileName);
+            // Get relative path from project root
+            final relativePath = entity.path
+                .replaceFirst('$projectPath${Platform.pathSeparator}', '')
+                .replaceAll(Platform.pathSeparator, '/'); // Normalize to forward slashes for display
+            
+            // Skip excluded folders
+            if (excludedFolders.any((folder) => relativePath.startsWith('$folder/') || relativePath.contains('/$folder/'))) {
+              continue;
+            }
+            
+            // Check if file has supported extension
+            final ext = relativePath.toLowerCase();
+            if (supportedExtensions.any((e) => ext.endsWith(e)) && !files.contains(relativePath)) {
+              files.add(relativePath);
             }
           }
         }
       }
     } catch (e) {
-      print('Error scanning for additional files: $e');
+      print('Error scanning for project files: $e');
     }
 
     return files;
@@ -291,8 +313,11 @@ class FileService {
   /// Returns: true if successful, false otherwise
   Future<bool> deleteProjectFile(String projectPath, String relativePath) async {
     try {
-      print('DEBUG deleteProjectFile: projectPath=$projectPath, relativePath=$relativePath');
-      final file = File('$projectPath${Platform.pathSeparator}$relativePath');
+      // Convert forward slashes to platform separator
+      final cleanPath = relativePath.replaceAll('/', Platform.pathSeparator);
+      
+      print('DEBUG deleteProjectFile: projectPath=$projectPath, relativePath=$cleanPath');
+      final file = File('$projectPath${Platform.pathSeparator}$cleanPath');
       print('  Full path: ${file.path}');
       if (await file.exists()) {
         await file.delete();
@@ -304,6 +329,120 @@ class FileService {
     } catch (e) {
       print('Error deleting file $relativePath: $e');
       return false;
+    }
+  }
+  
+  /// Delete a project folder and all its contents
+  /// 
+  /// Parameters:
+  ///   - projectPath: Root path of the project
+  ///   - relativePath: Relative path to folder (with or without trailing slash)
+  /// 
+  /// Returns: true if successful, false otherwise
+  Future<bool> deleteProjectFolder(String projectPath, String relativePath) async {
+    // Remove trailing slash if present for consistency
+    var cleanPath = relativePath.endsWith('/') 
+        ? relativePath.substring(0, relativePath.length - 1) 
+        : relativePath;
+    
+    // Also remove backslash if present
+    if (cleanPath.endsWith('\\')) {
+      cleanPath = cleanPath.substring(0, cleanPath.length - 1);
+    }
+    
+    // Convert forward slashes to platform separator
+    cleanPath = cleanPath.replaceAll('/', Platform.pathSeparator);
+    
+    // Build full path, avoiding double separators
+    final fullPath = projectPath.endsWith(Platform.pathSeparator)
+        ? '$projectPath$cleanPath'
+        : '$projectPath${Platform.pathSeparator}$cleanPath';
+    
+    print('DEBUG deleteProjectFolder:');
+    print('  fullPath: "$fullPath"');
+    
+    final dir = Directory(fullPath);
+    
+    if (!await dir.exists()) {
+      print('  Folder does not exist');
+      return false;
+    }
+    
+    // On Windows, try using cmd /c rmdir which can handle some locked files better
+    if (Platform.isWindows) {
+      try {
+        print('  Trying Windows rmdir command...');
+        final result = await Process.run(
+          'cmd',
+          ['/c', 'rmdir', '/s', '/q', fullPath],
+          runInShell: true,
+        );
+        
+        print('  rmdir exit code: ${result.exitCode}');
+        if (result.stderr.toString().isNotEmpty) {
+          print('  rmdir stderr: ${result.stderr}');
+        }
+        
+        // Check if directory was deleted
+        if (!await dir.exists()) {
+          print('  SUCCESS: Folder deleted via rmdir');
+          return true;
+        }
+      } catch (e) {
+        print('  rmdir failed: $e');
+      }
+    }
+    
+    // Fallback: Try Dart's delete with retries
+    for (int attempt = 1; attempt <= 3; attempt++) {
+      try {
+        print('  Dart delete attempt $attempt...');
+        
+        // First, try to delete all files inside individually
+        await _deleteContentsRecursively(dir);
+        
+        // Now try to delete the empty directory
+        if (await dir.exists()) {
+          await dir.delete(recursive: true);
+        }
+        
+        print('  SUCCESS: Folder deleted');
+        return true;
+      } catch (e) {
+        print('  Attempt $attempt failed: $e');
+        if (attempt < 3) {
+          final delay = attempt * 300;
+          print('  Waiting ${delay}ms before retry...');
+          await Future.delayed(Duration(milliseconds: delay));
+        }
+      }
+    }
+    
+    print('  FAILED: Could not delete folder');
+    return false;
+  }
+  
+  /// Helper to delete directory contents file by file
+  Future<void> _deleteContentsRecursively(Directory dir) async {
+    try {
+      await for (final entity in dir.list(recursive: false)) {
+        if (entity is File) {
+          try {
+            await entity.delete();
+          } catch (e) {
+            print('    Could not delete file: ${entity.path} - $e');
+          }
+        } else if (entity is Directory) {
+          await _deleteContentsRecursively(entity);
+          try {
+            await entity.delete();
+          } catch (e) {
+            print('    Could not delete subdir: ${entity.path} - $e');
+          }
+        }
+      }
+    } catch (e) {
+      print('    Error listing directory: $e');
     }
   }
 

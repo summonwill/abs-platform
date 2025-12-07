@@ -139,7 +139,7 @@ class _AIChatWindowState extends State<AIChatWindow> {
               ),
               // Chat content
               Expanded(
-                child: AIChatScreen(project: project),
+                child: AIChatScreen(project: project, isInSeparateWindow: true),
               ),
             ],
           ),
