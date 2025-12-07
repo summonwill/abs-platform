@@ -10,6 +10,23 @@
 - [x] Structured entries: Status, Working On, Next Steps, Blockers, Key Decisions
 - [x] All 3 AI providers updated to understand PASSDOWN context
 
+### API Cost Optimization ✅ (Session 8 - COMPLETED)
+- [x] Single API call for Close & Save (SESSION_NOTES + PASSDOWN combined)
+- [x] Trivial session skip (<2 messages, no file ops → no API call)
+- [x] Topics bar cleanup (removed X buttons, read-only)
+
+### Windows Distribution ✅ (Session 8 - COMPLETED)
+- [x] Build release version (`flutter build windows --release`)
+- [x] Create distributable folder
+- [x] Create Inno Setup installer script with setup wizard
+- [x] Installer config import on first launch
+
+### Code Signing Certificate (BEFORE PRO LAUNCH)
+- [ ] Research EV Code Signing providers (SSL.com, Sectigo, DigiCert)
+- [ ] Purchase EV certificate (~$350-600/year) - instant SmartScreen trust
+- [ ] Integrate signing into build/installer process
+- [ ] Required for enterprise/professional distribution
+
 ### Session Notes Auto-Update System ✅ (Session 7 - COMPLETED)
 - [x] "Update Notes" button in chat header for manual updates
 - [x] "Close & Save" auto-updates SESSION_NOTES.md with AI summary
