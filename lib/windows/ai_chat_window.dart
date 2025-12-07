@@ -63,15 +63,19 @@ class _AIChatWindowState extends State<AIChatWindow> {
   }
   
   /// Save the session and then close the window
+  /// This updates SESSION_NOTES.md with AI summary before closing (if meaningful)
   Future<void> _saveAndClose() async {
-    print('DEBUG: Close button pressed - stopping session first');
+    print('DEBUG: Close button pressed - updating session notes and stopping session');
     try {
       final state = _chatScreenKey.currentState;
       if (state != null) {
+        // Update session notes with smart logic (AI decides if meaningful)
+        await state.updateSessionNotes(showSuccessMessage: false, forceUpdate: false);
+        // Then stop the session
         await state.stopSessionOnClose();
       }
     } catch (e) {
-      print('DEBUG: Error stopping session: $e');
+      print('DEBUG: Error during save and close: $e');
     }
     
     // Close the window

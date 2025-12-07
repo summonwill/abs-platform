@@ -50,8 +50,19 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   final List<ChatMessage> _messages = [];
+  final List<SessionTopic> _sessionTopics = [];  // Track topics during session
   bool _isLoading = false;
   Timer? _heartbeatTimer;
+  
+  // Milestone tracking for AI prompts
+  int _fileOperationsSinceLastUpdate = 0;
+  int _messagesSinceLastUpdate = 0;
+  int _topicChangesSinceLastUpdate = 0;
+  bool _hasPromptedForUpdate = false;
+  DateTime? _lastNotesUpdate;
+  int _messageCountAtLastNotesUpdate = 0;  // Track when notes were last updated
+  int _fileOpsAtLastNotesUpdate = 0;       // Track file ops at last update
+  int _topicsAtLastNotesUpdate = 0;        // Track topics at last update
 
   @override
   void initState() {
@@ -113,12 +124,11 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     print('DEBUG: App lifecycle state changed to $state');
-    // Save session when app is paused, inactive, or detached
-    if (widget.isInSeparateWindow && 
-        (state == AppLifecycleState.paused || 
-         state == AppLifecycleState.inactive ||
-         state == AppLifecycleState.detached)) {
-      print('DEBUG: Saving session due to lifecycle change');
+    // Only save and stop session when window is actually closing (detached)
+    // Do NOT stop on inactive (lost focus) or paused (minimized) - user may come back
+    // The heartbeat mechanism handles crash detection instead
+    if (widget.isInSeparateWindow && state == AppLifecycleState.detached) {
+      print('DEBUG: Window detached - stopping session');
       stopSessionOnClose();
     }
   }
@@ -143,11 +153,15 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
         return;
       }
       
-      // Update session to completed with end time
+      // Update PASSDOWN.md before closing
+      await updatePassdown(forceUpdate: false);
+      
+      // Update session to completed with end time, conversation, and topics
       final updatedSession = activeSession.copyWith(
         status: SessionStatus.completed,
         endedAt: DateTime.now(),
         conversationHistory: _messages.map((m) => m.toJson()).toList(),
+        topics: _sessionTopics,  // Save topics collected during session
       );
       
       // Update project with stopped session
@@ -162,7 +176,7 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
       
       // Save to file
       await _saveToFile(updatedProject);
-      print('DEBUG: Auto-stopped session on window close');
+      print('DEBUG: Auto-stopped session on window close (${_sessionTopics.length} topics saved)');
     } catch (e) {
       print('DEBUG: Failed to auto-stop session: $e');
     }
@@ -195,12 +209,19 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
       orElse: () => Session(projectId: '', title: ''),
     );
 
-    if (activeSession.projectId.isNotEmpty && activeSession.conversationHistory.isNotEmpty) {
+    if (activeSession.projectId.isNotEmpty) {
       setState(() {
+        // Load conversation history
         _messages.clear();
-        _messages.addAll(
-          activeSession.conversationHistory.map((json) => ChatMessage.fromJson(json)),
-        );
+        if (activeSession.conversationHistory.isNotEmpty) {
+          _messages.addAll(
+            activeSession.conversationHistory.map((json) => ChatMessage.fromJson(json)),
+          );
+        }
+        
+        // Load existing topics
+        _sessionTopics.clear();
+        _sessionTopics.addAll(activeSession.topics);
       });
       
       // Scroll to bottom after loading
@@ -257,9 +278,10 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
 
     if (activeSession.projectId.isEmpty) return;
 
-    // Update session with conversation history
+    // Update session with conversation history and topics
     final updatedSession = activeSession.copyWith(
       conversationHistory: _messages.map((m) => m.toJson()).toList(),
+      topics: _sessionTopics,  // Include current topics
     );
 
     // Update project with new session
@@ -292,6 +314,54 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
       print('DEBUG: Failed to save chat history: $e');
     }
   }
+  
+  /// Save AI-generated summary to the session model
+  Future<void> _saveSessionSummary(Map<String, dynamic> summary) async {
+    try {
+      // Find active session
+      final activeSession = widget.project.sessions.firstWhere(
+        (s) => s.isActive,
+        orElse: () => Session(projectId: '', title: ''),
+      );
+      
+      if (activeSession.projectId.isEmpty) return;
+      
+      // Update topics from summary if AI found more
+      final summaryTopics = List<String>.from(summary['topics'] ?? []);
+      for (final topicName in summaryTopics) {
+        if (!_sessionTopics.any((t) => t.name.toLowerCase() == topicName.toLowerCase())) {
+          _sessionTopics.add(SessionTopic(
+            name: topicName,
+            isUserDefined: false,  // AI-generated
+          ));
+        }
+      }
+      
+      // Update session with summary data
+      final updatedSession = activeSession.copyWith(
+        summary: summary['summary'] as String?,
+        keyDecisions: List<String>.from(summary['keyDecisions'] ?? []),
+        topics: _sessionTopics,
+        conversationHistory: _messages.map((m) => m.toJson()).toList(),
+      );
+      
+      // Update project with new session
+      final updatedSessions = widget.project.sessions.map((s) {
+        return s.id == updatedSession.id ? updatedSession : s;
+      }).toList();
+      
+      final updatedProject = widget.project.copyWith(
+        sessions: updatedSessions,
+        lastModified: DateTime.now(),
+      );
+      
+      // Save to file
+      await _saveToFile(updatedProject);
+      print('DEBUG: Saved session summary (${_sessionTopics.length} topics)');
+    } catch (e) {
+      print('DEBUG: Failed to save session summary: $e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -313,6 +383,18 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
           ],
         ),
         actions: [
+          // Update Passdown button
+          IconButton(
+            icon: const Icon(Icons.sync_alt),
+            onPressed: _messages.isEmpty ? null : () => updatePassdown(forceUpdate: true),
+            tooltip: 'Update PASSDOWN.md',
+          ),
+          // Update Session Notes button
+          IconButton(
+            icon: const Icon(Icons.edit_note),
+            onPressed: _messages.isEmpty ? null : updateSessionNotes,
+            tooltip: 'Update Session Notes',
+          ),
           // Copy all button
           IconButton(
             icon: const Icon(Icons.copy_all),
@@ -330,6 +412,9 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
           ? _buildNoAPIKeyState()
           : Column(
               children: [
+                // Topic chips bar - shows current session topics
+                if (_sessionTopics.isNotEmpty)
+                  _buildTopicsBar(),
                 Expanded(
                   child: _messages.isEmpty
                       ? _buildEmptyState()
@@ -339,6 +424,60 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
               ],
             ),
     );
+  }
+  
+  /// Build a horizontal bar showing current session topics as chips
+  Widget _buildTopicsBar() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withOpacity(0.5),
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).dividerColor.withOpacity(0.3),
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.label_outline,
+            size: 16,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: _sessionTopics.map((topic) => Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Chip(
+                    label: Text(
+                      topic.name,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    deleteIcon: const Icon(Icons.close, size: 14),
+                    onDeleted: () => _removeTopic(topic),
+                    visualDensity: VisualDensity.compact,
+                    backgroundColor: topic.isUserDefined
+                        ? Theme.of(context).colorScheme.primaryContainer
+                        : Theme.of(context).colorScheme.secondaryContainer,
+                  ),
+                )).toList(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _removeTopic(SessionTopic topic) {
+    setState(() {
+      _sessionTopics.removeWhere((t) => t.name == topic.name);
+    });
   }
 
   Widget _buildProviderSelector() {
@@ -855,6 +994,26 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
 
     _messageController.clear();
     
+    // Parse #topic: tags from the message
+    final topicMatches = RegExp(r'#topic:\s*([^\s#]+)', caseSensitive: false).allMatches(message);
+    for (final match in topicMatches) {
+      final topicName = match.group(1)?.trim().toLowerCase();
+      if (topicName != null && topicName.isNotEmpty) {
+        // Only add if not already tracked
+        if (!_sessionTopics.any((t) => t.name.toLowerCase() == topicName)) {
+          _sessionTopics.add(SessionTopic(
+            name: topicName,
+            isUserDefined: true,
+          ));
+          _trackMilestone(topics: 1);  // Track topic addition
+          print('DEBUG: Added user topic: $topicName');
+        }
+      }
+    }
+    
+    // Track message milestone
+    _trackMilestone(messages: 1);
+    
     setState(() {
       _messages.add(ChatMessage(content: message, isUser: true));
       _isLoading = true;
@@ -886,6 +1045,12 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
       // This way AI always has full access to read/modify any file
       for (var entry in allFileContents.entries) {
         projectContext['[FILE] ${entry.key}'] = entry.value;
+      }
+      
+      // Add PASSDOWN context for session continuity
+      final passdownContext = await _readPassdownContext();
+      if (passdownContext.isNotEmpty) {
+        projectContext['[PASSDOWN]'] = passdownContext;
       }
 
       // DEBUG: Check what we're sending
@@ -1016,6 +1181,11 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
           }
         }
         
+        // Track file operations milestone
+        if (appliedUpdates.isNotEmpty) {
+          _trackMilestone(fileOps: appliedUpdates.length);
+        }
+        
         // Try to refresh the project's file list so UI updates
         // This will fail in separate windows (no Hive access) but that's OK
         // Skip refresh in separate windows to avoid Hive errors
@@ -1088,6 +1258,727 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
         );
       }
     });
+  }
+  
+  /// Update SESSION_NOTES.md with current session summary
+  /// 
+  /// [forceUpdate] - If true, always update (user clicked button). If false, use smart logic.
+  /// [showSuccessMessage] - Show snackbar on success
+  /// 
+  /// Smart logic (when forceUpdate=false):
+  /// - Always update if file operations occurred since last update
+  /// - Always update if new topics added since last update  
+  /// - If only messages changed, ask AI if the new content is meaningful
+  Future<void> updateSessionNotes({bool showSuccessMessage = true, bool forceUpdate = true}) async {
+    if (_messages.isEmpty) return;
+    
+    // Calculate what's new since last update
+    final totalFileOps = _messages.fold<int>(0, (sum, m) => sum + m.fileUpdates.length);
+    final newFileOps = totalFileOps - _fileOpsAtLastNotesUpdate;
+    final newTopics = _sessionTopics.length - _topicsAtLastNotesUpdate;
+    final newMessages = _messages.length - _messageCountAtLastNotesUpdate;
+    
+    // Smart update logic (when not forced)
+    if (!forceUpdate && _messageCountAtLastNotesUpdate > 0) {
+      // Hard-coded: Always update if file ops or new topics
+      if (newFileOps > 0 || newTopics > 0) {
+        print('DEBUG: Smart update - new file ops ($newFileOps) or topics ($newTopics), updating');
+      } else if (newMessages > 0) {
+        // Ask AI if the new messages are meaningful
+        final shouldUpdate = await _askAIIfUpdateNeeded(newMessages);
+        if (!shouldUpdate) {
+          print('DEBUG: Smart update - AI says no meaningful changes, skipping');
+          return;
+        }
+        print('DEBUG: Smart update - AI says meaningful changes, updating');
+      } else {
+        // No new activity at all
+        print('DEBUG: Smart update - no new activity, skipping');
+        return;
+      }
+    }
+    
+    setState(() {
+      _isLoading = true;
+    });
+    
+    try {
+      // Get AI to summarize the session
+      final summary = await _generateSessionSummary();
+      
+      if (summary != null) {
+        // Update SESSION_NOTES.md file
+        await _syncToSessionNotes(summary);
+        
+        // Also save summary to the session model
+        await _saveSessionSummary(summary);
+        
+        // Reset milestone counters
+        _fileOperationsSinceLastUpdate = 0;
+        _messagesSinceLastUpdate = 0;
+        _topicChangesSinceLastUpdate = 0;
+        _hasPromptedForUpdate = false;
+        _lastNotesUpdate = DateTime.now();
+        
+        if (showSuccessMessage && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Session notes updated!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('DEBUG: Failed to update session notes: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update notes: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+  
+  /// Generate a summary of the current session using AI
+  Future<Map<String, dynamic>?> _generateSessionSummary() async {
+    final aiKeys = widget.isInSeparateWindow && widget.initialApiKeys != null
+        ? widget.initialApiKeys!
+        : ref.read(aiKeysProvider);
+    
+    if (!aiKeys.hasAnyKey) return null;
+    
+    final aiService = ref.read(aiServiceProvider);
+    aiService.setAPIKeys(
+      openAI: aiKeys.openAI,
+      anthropic: aiKeys.anthropic,
+      gemini: aiKeys.gemini,
+    );
+    
+    // Build conversation text
+    final conversationText = _messages.map((m) {
+      return '${m.isUser ? "User" : "AI"}: ${m.content}';
+    }).join('\n\n');
+    
+    // Get list of file operations
+    final fileOps = <String>[];
+    for (final msg in _messages) {
+      if (msg.fileUpdates.isNotEmpty) {
+        fileOps.addAll(msg.fileUpdates.keys);
+      }
+    }
+    
+    // Build summary prompt
+    final summaryPrompt = '''Please analyze this session conversation and provide a structured summary.
+
+CONVERSATION:
+$conversationText
+
+${fileOps.isNotEmpty ? 'FILES MODIFIED: ${fileOps.join(", ")}' : ''}
+
+${_sessionTopics.isNotEmpty ? 'TOPICS DISCUSSED: ${_sessionTopics.map((t) => t.name).join(", ")}' : ''}
+
+Respond with ONLY a JSON object (no markdown, no code blocks) in this exact format:
+{
+  "title": "Brief session title (3-6 words)",
+  "summary": "2-3 sentence summary of what was accomplished",
+  "topics": ["topic1", "topic2"],
+  "keyDecisions": ["Decision or outcome 1", "Decision or outcome 2"],
+  "filesModified": ["file1.dart", "file2.md"]
+}''';
+
+    try {
+      final selectedProvider = ref.read(selectedAIProviderProvider);
+      final selectedModel = ref.read(selectedModelProvider)[selectedProvider];
+      
+      final response = await aiService.sendMessage(
+        provider: selectedProvider,
+        model: selectedModel,
+        message: summaryPrompt,
+        conversationHistory: [],
+        projectContext: {},
+      );
+      
+      // Parse JSON from response
+      // Try to extract JSON if wrapped in code blocks
+      var jsonStr = response.trim();
+      if (jsonStr.contains('```')) {
+        final jsonMatch = RegExp(r'```(?:json)?\s*([\s\S]*?)```').firstMatch(jsonStr);
+        if (jsonMatch != null) {
+          jsonStr = jsonMatch.group(1)?.trim() ?? jsonStr;
+        }
+      }
+      
+      return jsonDecode(jsonStr) as Map<String, dynamic>;
+    } catch (e) {
+      print('DEBUG: Failed to generate summary: $e');
+      // Return a basic summary if AI fails
+      return {
+        'title': 'Session ${DateTime.now().toString().split(' ')[0]}',
+        'summary': 'Session with ${_messages.length} messages.',
+        'topics': _sessionTopics.map((t) => t.name).toList(),
+        'keyDecisions': [],
+        'filesModified': _messages.expand((m) => m.fileUpdates.keys).toList(),
+      };
+    }
+  }
+  
+  /// Sync session summary to SESSION_NOTES.md file
+  /// Only writes if there's new activity since last update
+  Future<void> _syncToSessionNotes(Map<String, dynamic> summary) async {
+    // Skip if no new messages since last update
+    if (_messages.length <= _messageCountAtLastNotesUpdate && _messageCountAtLastNotesUpdate > 0) {
+      print('DEBUG: No new messages since last notes update (${_messages.length} <= $_messageCountAtLastNotesUpdate), skipping');
+      return;
+    }
+    
+    final sessionNotesPath = '${widget.project.path}${Platform.pathSeparator}SESSION_NOTES.md';
+    final file = File(sessionNotesPath);
+    
+    // Find active session for metadata
+    final activeSession = widget.project.sessions.firstWhere(
+      (s) => s.isActive,
+      orElse: () => Session(projectId: '', title: 'Unknown Session'),
+    );
+    
+    final now = DateTime.now();
+    final dateStr = '${_monthName(now.month)} ${now.day}, ${now.year}';
+    final title = summary['title'] ?? activeSession.title;
+    final summaryText = summary['summary'] ?? '';
+    final topics = List<String>.from(summary['topics'] ?? []);
+    final decisions = List<String>.from(summary['keyDecisions'] ?? []);
+    final files = List<String>.from(summary['filesModified'] ?? []);
+    
+    // Build the session entry
+    final entry = StringBuffer();
+    entry.writeln('## ${activeSession.title}: $dateStr - $title ✅');
+    entry.writeln();
+    entry.writeln('### Summary');
+    entry.writeln(summaryText);
+    entry.writeln();
+    
+    if (topics.isNotEmpty) {
+      entry.writeln('### Topics');
+      for (final topic in topics) {
+        entry.writeln('- $topic');
+      }
+      entry.writeln();
+    }
+    
+    if (decisions.isNotEmpty) {
+      entry.writeln('### Key Decisions');
+      for (final decision in decisions) {
+        entry.writeln('- $decision');
+      }
+      entry.writeln();
+    }
+    
+    if (files.isNotEmpty) {
+      entry.writeln('### Files Modified');
+      for (final f in files) {
+        entry.writeln('- `$f`');
+      }
+      entry.writeln();
+    }
+    
+    entry.writeln('---');
+    entry.writeln();
+    
+    // Read existing content or create new
+    String existingContent = '';
+    if (await file.exists()) {
+      existingContent = await file.readAsString();
+    }
+    
+    // Insert after header or create new file
+    if (existingContent.isEmpty) {
+      // Create new file with header
+      final newContent = '''# Session Notes - ${widget.project.name}
+
+${entry.toString()}''';
+      await file.writeAsString(newContent);
+    } else {
+      // Find insertion point (after first heading)
+      final lines = existingContent.split('\n');
+      final insertIndex = lines.indexWhere((l) => l.startsWith('## '));
+      
+      if (insertIndex != -1) {
+        // Insert before existing sessions
+        lines.insert(insertIndex, entry.toString());
+        await file.writeAsString(lines.join('\n'));
+      } else {
+        // No sessions yet, append after header
+        await file.writeAsString('$existingContent\n${entry.toString()}');
+      }
+    }
+    
+    // Track when we last updated so we can use smart logic next time
+    final totalFileOps = _messages.fold<int>(0, (sum, m) => sum + m.fileUpdates.length);
+    _messageCountAtLastNotesUpdate = _messages.length;
+    _fileOpsAtLastNotesUpdate = totalFileOps;
+    _topicsAtLastNotesUpdate = _sessionTopics.length;
+    print('DEBUG: Updated SESSION_NOTES.md for ${activeSession.title} (${_messages.length} msgs, $totalFileOps file ops, ${_sessionTopics.length} topics)');
+  }
+  
+  /// Ask AI if the new messages contain meaningful progress worth updating notes
+  Future<bool> _askAIIfUpdateNeeded(int newMessageCount) async {
+    final aiKeys = widget.isInSeparateWindow && widget.initialApiKeys != null
+        ? widget.initialApiKeys!
+        : ref.read(aiKeysProvider);
+    
+    if (!aiKeys.hasAnyKey) return true;  // Default to update if no AI
+    
+    final aiService = ref.read(aiServiceProvider);
+    aiService.setAPIKeys(
+      openAI: aiKeys.openAI,
+      anthropic: aiKeys.anthropic,
+      gemini: aiKeys.gemini,
+    );
+    
+    // Get the new messages since last update
+    final startIndex = _messageCountAtLastNotesUpdate;
+    final newMessages = _messages.sublist(startIndex).map((m) {
+      return '${m.isUser ? "User" : "AI"}: ${m.content}';
+    }).join('\n');
+    
+    final prompt = '''Analyze these recent messages from a development session and determine if they contain meaningful progress that should be documented in session notes.
+
+NEW MESSAGES:
+$newMessages
+
+Meaningful progress includes:
+- Decisions made
+- Problems solved
+- New features discussed or implemented
+- Important information exchanged
+- Technical discussions with substance
+
+NOT meaningful (should skip):
+- Casual greetings or farewells
+- Small talk
+- Simple acknowledgments like "ok", "thanks", "got it"
+- Repetitive or redundant information
+
+Respond with ONLY "yes" or "no" (lowercase, no punctuation).''';
+
+    try {
+      final selectedProvider = ref.read(selectedAIProviderProvider);
+      final selectedModel = ref.read(selectedModelProvider)[selectedProvider];
+      
+      final response = await aiService.sendMessage(
+        provider: selectedProvider,
+        model: selectedModel,
+        message: prompt,
+        conversationHistory: [],
+        projectContext: {},
+      );
+      
+      final answer = response.trim().toLowerCase();
+      print('DEBUG: AI meaningful check response: "$answer"');
+      return answer.contains('yes');
+    } catch (e) {
+      print('DEBUG: AI meaningful check failed: $e');
+      return true;  // Default to update on error
+    }
+  }
+  
+  String _monthName(int month) {
+    const months = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+    return months[month];
+  }
+  
+  /// Update PASSDOWN.md with current session context for continuity
+  /// 
+  /// PASSDOWN.md is the living context document that enables:
+  /// - Single-agent continuity (pick up where you left off)
+  /// - Multi-agent coordination (agent A hands off to agent B)
+  /// - Session handoff with full context
+  /// 
+  /// [forceUpdate] - If true, always update. If false, use smart logic.
+  Future<void> updatePassdown({bool forceUpdate = true}) async {
+    if (_messages.isEmpty) return;
+    
+    // Use same smart logic as session notes
+    final totalFileOps = _messages.fold<int>(0, (sum, m) => sum + m.fileUpdates.length);
+    final newFileOps = totalFileOps - _fileOpsAtLastNotesUpdate;
+    final newTopics = _sessionTopics.length - _topicsAtLastNotesUpdate;
+    final newMessages = _messages.length - _messageCountAtLastNotesUpdate;
+    
+    if (!forceUpdate && _messageCountAtLastNotesUpdate > 0) {
+      if (newFileOps <= 0 && newTopics <= 0 && newMessages <= 0) {
+        print('DEBUG: PASSDOWN - no new activity, skipping');
+        return;
+      }
+    }
+    
+    try {
+      // Generate PASSDOWN entry using AI
+      final passdownEntry = await _generatePassdownEntry();
+      if (passdownEntry != null) {
+        await _syncToPassdown(passdownEntry);
+        print('DEBUG: PASSDOWN.md updated');
+      }
+    } catch (e) {
+      print('DEBUG: Failed to update PASSDOWN: $e');
+    }
+  }
+  
+  /// Generate a PASSDOWN entry for the current session
+  Future<Map<String, dynamic>?> _generatePassdownEntry() async {
+    final aiKeys = widget.isInSeparateWindow && widget.initialApiKeys != null
+        ? widget.initialApiKeys!
+        : ref.read(aiKeysProvider);
+    
+    if (!aiKeys.hasAnyKey) return null;
+    
+    final aiService = ref.read(aiServiceProvider);
+    aiService.setAPIKeys(
+      openAI: aiKeys.openAI,
+      anthropic: aiKeys.anthropic,
+      gemini: aiKeys.gemini,
+    );
+    
+    // Build conversation text (last 20 messages for context)
+    final recentMessages = _messages.length > 20 
+        ? _messages.sublist(_messages.length - 20) 
+        : _messages;
+    final convBuffer = StringBuffer();
+    for (final m in recentMessages) {
+      final role = m.isUser ? 'User' : 'AI';
+      convBuffer.writeln('$role: ${m.content}\n');
+    }
+    
+    // Get list of file operations
+    final fileOps = <String>[];
+    for (final msg in _messages) {
+      if (msg.fileUpdates.isNotEmpty) {
+        fileOps.addAll(msg.fileUpdates.keys);
+      }
+    }
+    
+    final topicsStr = _sessionTopics.isNotEmpty 
+        ? 'TOPICS: ${_sessionTopics.map((t) => t.name).join(", ")}' 
+        : '';
+    final filesStr = fileOps.isNotEmpty 
+        ? 'FILES MODIFIED: ${fileOps.join(", ")}' 
+        : '';
+    
+    final passdownPrompt = '''Analyze this session and create a PASSDOWN entry for the next agent/session.
+
+PASSDOWN is a handoff document that enables continuity. The next AI agent will read this to understand:
+- What was being worked on
+- Current status (In Progress, Blocked, Complete)
+- What needs to happen next
+- Any blockers or decisions pending
+
+CONVERSATION:
+${convBuffer.toString()}
+
+$filesStr
+
+$topicsStr
+
+Respond with ONLY a JSON object (no markdown, no code blocks):
+{
+  "workingOn": "Brief description of current task/focus",
+  "status": "In Progress" or "Blocked" or "Complete",
+  "summary": "2-3 sentences of what was accomplished",
+  "nextSteps": ["Step 1", "Step 2"],
+  "blockers": ["Blocker if any, or empty array"],
+  "keyDecisions": ["Important decisions made"],
+  "filesModified": ["file1.dart", "file2.md"],
+  "context": "Any additional context the next agent needs"
+}''';
+
+    try {
+      final selectedProvider = ref.read(selectedAIProviderProvider);
+      final selectedModel = ref.read(selectedModelProvider)[selectedProvider];
+      
+      final response = await aiService.sendMessage(
+        provider: selectedProvider,
+        model: selectedModel,
+        message: passdownPrompt,
+        conversationHistory: [],
+        projectContext: {},
+      );
+      
+      // Parse JSON from response
+      var jsonStr = response.trim();
+      if (jsonStr.contains('```')) {
+        final jsonMatch = RegExp(r'```(?:json)?\s*([\s\S]*?)```').firstMatch(jsonStr);
+        if (jsonMatch != null) {
+          jsonStr = jsonMatch.group(1)?.trim() ?? jsonStr;
+        }
+      }
+      
+      return jsonDecode(jsonStr) as Map<String, dynamic>;
+    } catch (e) {
+      print('DEBUG: Failed to generate PASSDOWN entry: $e');
+      // Return basic entry if AI fails
+      return {
+        'workingOn': 'Session work',
+        'status': 'In Progress',
+        'summary': 'Session with ${_messages.length} messages.',
+        'nextSteps': <String>[],
+        'blockers': <String>[],
+        'keyDecisions': <String>[],
+        'filesModified': fileOps,
+        'context': '',
+      };
+    }
+  }
+  
+  /// Sync PASSDOWN entry to PASSDOWN.md file
+  /// New entries prepend to Active Context section
+  /// Entries marked "Complete" move to Archive section
+  Future<void> _syncToPassdown(Map<String, dynamic> entry) async {
+    final passdownPath = '${widget.project.path}${Platform.pathSeparator}PASSDOWN.md';
+    final file = File(passdownPath);
+    
+    // Find active session for metadata
+    final activeSession = widget.project.sessions.firstWhere(
+      (s) => s.isActive,
+      orElse: () => Session(projectId: '', title: 'Unknown Session'),
+    );
+    
+    final now = DateTime.now();
+    final timestamp = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final status = entry['status'] ?? 'In Progress';
+    final workingOn = entry['workingOn'] ?? 'Session work';
+    final summary = entry['summary'] ?? '';
+    final nextSteps = List<String>.from(entry['nextSteps'] ?? []);
+    final blockers = List<String>.from(entry['blockers'] ?? []);
+    final keyDecisions = List<String>.from(entry['keyDecisions'] ?? []);
+    final filesModified = List<String>.from(entry['filesModified'] ?? []);
+    final contextStr = entry['context'] ?? '';
+    
+    // Build the PASSDOWN entry
+    final entryBuffer = StringBuffer();
+    entryBuffer.writeln('### [$timestamp] ${activeSession.title}');
+    entryBuffer.writeln('**Status**: $status');
+    entryBuffer.writeln('**Working On**: $workingOn');
+    entryBuffer.writeln();
+    entryBuffer.writeln(summary);
+    entryBuffer.writeln();
+    
+    if (nextSteps.isNotEmpty) {
+      entryBuffer.writeln('**Next Steps**:');
+      for (final step in nextSteps) {
+        entryBuffer.writeln('- $step');
+      }
+      entryBuffer.writeln();
+    }
+    
+    if (blockers.isNotEmpty) {
+      entryBuffer.writeln('**Blockers**:');
+      for (final blocker in blockers) {
+        entryBuffer.writeln('- ⚠️ $blocker');
+      }
+      entryBuffer.writeln();
+    }
+    
+    if (keyDecisions.isNotEmpty) {
+      entryBuffer.writeln('**Key Decisions**:');
+      for (final decision in keyDecisions) {
+        entryBuffer.writeln('- $decision');
+      }
+      entryBuffer.writeln();
+    }
+    
+    if (filesModified.isNotEmpty) {
+      entryBuffer.writeln('**Files Modified**:');
+      for (final f in filesModified) {
+        entryBuffer.writeln('- `$f`');
+      }
+      entryBuffer.writeln();
+    }
+    
+    if (contextStr.isNotEmpty) {
+      entryBuffer.writeln('**Context**: $contextStr');
+      entryBuffer.writeln();
+    }
+    
+    entryBuffer.writeln('---');
+    entryBuffer.writeln();
+    
+    // Read existing content or create new file
+    String existingContent = '';
+    if (await file.exists()) {
+      existingContent = await file.readAsString();
+    }
+    
+    if (existingContent.isEmpty) {
+      // Create new PASSDOWN.md
+      final newContent = '''# PASSDOWN.md - ${widget.project.name}
+
+> **Purpose**: Living context document for session continuity and agent handoff.
+> AI agents read this on session start to understand current state.
+> Updated automatically on session close.
+
+## Active Context
+
+${entryBuffer.toString()}
+
+## Archive
+
+<!-- Completed entries move here -->
+''';
+      await file.writeAsString(newContent);
+    } else {
+      // Insert new entry at top of Active Context section
+      // Also move any "Complete" status entries to Archive
+      final lines = existingContent.split('\n');
+      final activeIndex = lines.indexWhere((l) => l.trim() == '## Active Context');
+      final archiveIndex = lines.indexWhere((l) => l.trim() == '## Archive');
+      
+      if (activeIndex != -1) {
+        // Find entries that are Complete and should be archived
+        final activeSection = archiveIndex != -1 
+            ? lines.sublist(activeIndex + 1, archiveIndex).join('\n')
+            : lines.sublist(activeIndex + 1).join('\n');
+        
+        // Parse existing entries to find Complete ones
+        final completedEntries = <String>[];
+        final stillActiveEntries = <String>[];
+        
+        // Split by entry markers (### [timestamp])
+        final entryPattern = RegExp(r'### \[\d{4}-\d{2}-\d{2}');
+        final parts = activeSection.split(entryPattern);
+        final matches = entryPattern.allMatches(activeSection).toList();
+        
+        for (int i = 0; i < matches.length; i++) {
+          final entryContent = i < parts.length - 1 ? parts[i + 1] : '';
+          final fullEntry = '${matches[i].group(0)}$entryContent';
+          
+          if (fullEntry.contains('**Status**: Complete')) {
+            // Wrap in details tag for archive
+            final titleMatch = RegExp(r'### \[([^\]]+)\] (.+)').firstMatch(fullEntry);
+            final title = titleMatch != null 
+                ? '[${titleMatch.group(1)}] ${titleMatch.group(2)}'
+                : 'Completed Entry';
+            completedEntries.add('<details>\n<summary>$title</summary>\n\n$fullEntry\n</details>\n');
+          } else {
+            stillActiveEntries.add(fullEntry);
+          }
+        }
+        
+        // Rebuild file
+        final newLines = <String>[];
+        newLines.addAll(lines.sublist(0, activeIndex + 1));
+        newLines.add('');
+        newLines.add(entryBuffer.toString());
+        
+        // Add still-active entries
+        for (final active in stillActiveEntries) {
+          newLines.add(active);
+        }
+        
+        // Add archive section
+        if (archiveIndex != -1) {
+          newLines.add('');
+          newLines.add('## Archive');
+          newLines.add('');
+          
+          // Add newly completed entries
+          for (final completed in completedEntries) {
+            newLines.add(completed);
+          }
+          
+          // Add existing archive content
+          final existingArchive = lines.sublist(archiveIndex + 1).join('\n').trim();
+          if (existingArchive.isNotEmpty && !existingArchive.startsWith('<!-- ')) {
+            newLines.add(existingArchive);
+          }
+        }
+        
+        await file.writeAsString(newLines.join('\n'));
+      } else {
+        // No Active Context section, append to end
+        await file.writeAsString('$existingContent\n${entryBuffer.toString()}');
+      }
+    }
+    
+    print('DEBUG: PASSDOWN.md synced for ${activeSession.title} (status: $status)');
+  }
+  
+  /// Read PASSDOWN.md and return Active Context for system prompt injection
+  Future<String> _readPassdownContext() async {
+    try {
+      final passdownPath = '${widget.project.path}${Platform.pathSeparator}PASSDOWN.md';
+      final file = File(passdownPath);
+      
+      if (!await file.exists()) {
+        return '';
+      }
+      
+      final content = await file.readAsString();
+      
+      // Extract only Active Context section
+      final activeMatch = RegExp(r'## Active Context\s*([\s\S]*?)(?=## Archive|$)').firstMatch(content);
+      if (activeMatch != null) {
+        final activeContext = activeMatch.group(1)?.trim() ?? '';
+        if (activeContext.isNotEmpty) {
+          return '\n\n📋 PASSDOWN (Session Continuity Context):\n$activeContext';
+        }
+      }
+      
+      return '';
+    } catch (e) {
+      print('DEBUG: Failed to read PASSDOWN: $e');
+      return '';
+    }
+  }
+  
+  /// Check if we should prompt for a session notes update (AI milestone)
+  void _checkMilestonePrompt() {
+    // Don't prompt if we already have, or if recently updated
+    if (_hasPromptedForUpdate) return;
+    if (_lastNotesUpdate != null && 
+        DateTime.now().difference(_lastNotesUpdate!).inMinutes < 10) return;
+    
+    // Prompt conditions:
+    // - 5+ file operations since last update
+    // - 15+ messages since last update  
+    // - 3+ topic changes since last update
+    final shouldPrompt = _fileOperationsSinceLastUpdate >= 5 ||
+                        _messagesSinceLastUpdate >= 15 ||
+                        _topicChangesSinceLastUpdate >= 3;
+    
+    if (shouldPrompt) {
+      _hasPromptedForUpdate = true;
+      _showMilestonePrompt();
+    }
+  }
+  
+  /// Show AI milestone prompt asking if user wants to update notes
+  void _showMilestonePrompt() {
+    // Add a system message suggesting update
+    setState(() {
+      _messages.add(ChatMessage(
+        content: '📝 **Session Milestone Reached!**\n\n'
+            'You\'ve made good progress! Would you like me to update the session notes?\n\n'
+            '• ${_fileOperationsSinceLastUpdate} file(s) modified\n'
+            '• ${_messagesSinceLastUpdate} messages exchanged\n'
+            '• ${_topicChangesSinceLastUpdate} topic(s) discussed\n\n'
+            'Click the **📝 Update Notes** button in the toolbar to save your progress.',
+        isUser: false,
+      ));
+    });
+    _scrollToBottom();
+  }
+  
+  /// Track milestones after each significant action
+  void _trackMilestone({int fileOps = 0, int messages = 0, int topics = 0}) {
+    _fileOperationsSinceLastUpdate += fileOps;
+    _messagesSinceLastUpdate += messages;
+    _topicChangesSinceLastUpdate += topics;
+    _checkMilestonePrompt();
   }
 }
 

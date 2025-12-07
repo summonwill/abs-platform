@@ -310,11 +310,6 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
             tooltip: 'View Debug Log',
           ),
           IconButton(
-            icon: const Icon(Icons.chat),
-            onPressed: () => _showAIChatWindow(context, project, ref),
-            tooltip: 'AI Assistant',
-          ),
-          IconButton(
             icon: const Icon(Icons.more_vert),
             onPressed: () => _showProjectMenu(context, ref, project),
             tooltip: 'More options',
@@ -351,37 +346,52 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
         ],
         ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showAIChatWindow(context, project, ref),
-        icon: const Icon(Icons.chat_bubble),
-        label: const Text('Chat with AI'),
-        tooltip: 'Open AI Assistant',
+        onPressed: () => _startNewSessionAndChat(context, project, ref),
+        icon: const Icon(Icons.add_comment),
+        label: const Text('New Chat'),
+        tooltip: 'Start a new AI chat session',
       ),
     );
   }
 
-  void _showAIChatWindow(BuildContext context, Project project, WidgetRef ref) async {
-    // Get the notifier to check if loaded
-    final notifier = ref.read(aiKeysProvider.notifier);
+  /// Starts a new session with auto-generated name and immediately opens the chat window
+  Future<void> _startNewSessionAndChat(BuildContext context, Project project, WidgetRef ref) async {
+    // Check for and clean up any stale heartbeat first
+    final status = await _checkAndCleanupHeartbeat(project.path, project.id, ref);
     
-    // Wait for keys to load if not yet loaded (max 2 seconds)
+    if (status == HeartbeatStatus.activeWindow) {
+      // Another window is currently active - warn the user
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('A session is already active, please wait for session to close'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+    
+    Project currentProject = project;
+    if (status == HeartbeatStatus.cleanedUp) {
+      // Refresh project to get latest state after cleanup
+      final refreshedProject = ref.read(projectsProvider.notifier).getProject(project.id);
+      if (refreshedProject != null) {
+        ref.read(selectedProjectProvider.notifier).state = refreshedProject;
+        currentProject = refreshedProject;
+      }
+    }
+    
+    // Check API keys before creating session
+    final notifier = ref.read(aiKeysProvider.notifier);
     int attempts = 0;
     while (!notifier.isLoaded && attempts < 20) {
       await Future.delayed(const Duration(milliseconds: 100));
       attempts++;
     }
     
-    // Get API keys to pass to separate window (separate windows can't access Hive)
     final aiKeys = ref.read(aiKeysProvider);
-    
-    // Debug: Check if keys are available
-    print('DEBUG _showAIChatWindow:');
-    print('  Keys loaded: ${notifier.isLoaded}');
-    print('  OpenAI key present: ${aiKeys.openAI != null}');
-    print('  Anthropic key present: ${aiKeys.anthropic != null}');
-    print('  Gemini key present: ${aiKeys.gemini != null}');
-    
     if (!aiKeys.hasAnyKey) {
-      // Show warning if no keys configured
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -393,7 +403,28 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
       return;
     }
     
-    // Create window arguments with project data AND API keys
+    // Auto-generate session name with number
+    final sessionName = 'Session ${currentProject.sessions.length + 1}';
+    
+    // Create the session
+    await ref.read(projectsProvider.notifier).createSession(currentProject.id, sessionName);
+    
+    // Get updated project with new session
+    final updatedProject = ref.read(projectsProvider.notifier).getProject(currentProject.id);
+    if (updatedProject != null) {
+      ref.read(selectedProjectProvider.notifier).state = updatedProject;
+      
+      // Launch the chat window with the updated project (which has the new active session)
+      if (context.mounted) {
+        await _launchAIChatWindowFromMain(context, ref, updatedProject);
+      }
+    }
+  }
+  
+  /// Launch AI chat window from main project screen (used by FAB)
+  Future<void> _launchAIChatWindowFromMain(BuildContext context, WidgetRef ref, Project project) async {
+    final aiKeys = ref.read(aiKeysProvider);
+    
     final windowArgs = {
       ...project.toJson(),
       'apiKeys': {
@@ -406,9 +437,8 @@ class _ProjectDetailScreenState extends ConsumerState<ProjectDetailScreen> {
     final window = await DesktopMultiWindow.createWindow(jsonEncode(windowArgs));
     
     window
-      ..setTitle('AI Assistant - ${project.name}')
+      ..setTitle('AI Chat - ${project.name}')
       ..setFrame(const Offset(100, 100) & const Size(800, 600))
-      ..setFrameAutosaveName('ai_chat_window')
       ..center()
       ..show();
   }
@@ -810,6 +840,12 @@ class _FilesTabState extends ConsumerState<_FilesTab> {
         _fileWatcher = directory.watch(events: FileSystemEvent.all, recursive: true).listen((event) {
           // Skip if file watching is paused (during delete operations)
           if (_ProjectDetailScreenState.pauseFileWatching) return;
+          
+          // Ignore heartbeat and chat history files (internal sync files)
+          final filename = event.path.split(Platform.pathSeparator).last;
+          if (filename == '.abs_session_heartbeat' || filename == '.abs_chat_history.json') {
+            return;
+          }
           
           print('DEBUG FilesTab watcher: ${event.type} - ${event.path}');
           _debouncedReload();
@@ -1634,64 +1670,67 @@ class _SessionsTabState extends ConsumerState<_SessionsTab> {
               return Card(
                 key: Key(session.id),
                 margin: const EdgeInsets.only(bottom: 8),
-                child: ListTile(
-                  leading: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Drag handle
-                      ReorderableDragStartListener(
-                        index: index,
-                        child: Icon(
-                          Icons.drag_indicator,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.5),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Icon(
-                        session.isActive ? Icons.chat_bubble : Icons.chat_bubble_outline,
-                        color: session.isActive ? Colors.green : null,
-                      ),
-                    ],
-                  ),
-                  title: Row(
-                    children: [
-                      Expanded(child: Text(session.title)),
-                      if (session.isActive)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.green,
-                            borderRadius: BorderRadius.circular(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ListTile(
+                      leading: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Drag handle
+                          ReorderableDragStartListener(
+                            index: index,
+                            child: Icon(
+                              Icons.drag_indicator,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.5),
+                            ),
                           ),
-                          child: const Text(
-                            'ACTIVE',
-                            style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                          const SizedBox(width: 8),
+                          Icon(
+                            session.isActive ? Icons.chat_bubble : Icons.chat_bubble_outline,
+                            color: session.isActive ? Colors.green : null,
                           ),
-                        ),
-                    ],
-                  ),
-                  subtitle: Row(
-                    children: [
-                      Text(_formatDate(session.startedAt)),
-                      const Text(' • '),
-                      Icon(Icons.message, size: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
-                      const SizedBox(width: 2),
-                      Text('$messageCount msgs'),
-                      const Text(' • '),
-                      if (session.isActive) ...[
-                        Icon(Icons.timer, size: 12, color: Colors.green),
-                        const SizedBox(width: 2),
-                      ],
-                      Text(
-                        _formatDuration(session.duration),
-                        style: session.isActive 
-                            ? const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)
-                            : null,
+                        ],
                       ),
-                    ],
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
+                      title: Row(
+                        children: [
+                          Expanded(child: Text(session.title)),
+                          if (session.isActive)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.green,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Text(
+                                'ACTIVE',
+                                style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                        ],
+                      ),
+                      subtitle: Row(
+                        children: [
+                          Text(_formatDate(session.startedAt)),
+                          const Text(' • '),
+                          Icon(Icons.message, size: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                          const SizedBox(width: 2),
+                          Text('$messageCount msgs'),
+                          const Text(' • '),
+                          if (session.isActive) ...[
+                            Icon(Icons.timer, size: 12, color: Colors.green),
+                            const SizedBox(width: 2),
+                          ],
+                          Text(
+                            _formatDuration(session.duration),
+                            style: session.isActive 
+                                ? const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)
+                                : null,
+                          ),
+                        ],
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
                     children: [
                       // Stop/Resume session button
                       if (session.isActive)
@@ -1769,6 +1808,50 @@ class _SessionsTabState extends ConsumerState<_SessionsTab> {
                   ),
                   onTap: () => _openSessionChat(context, ref, project, session),
                 ),
+                // Topics row - show if session has topics
+                if (session.topics.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: session.topics.map((topic) => Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: topic.isUserDefined
+                              ? Theme.of(context).colorScheme.primaryContainer
+                              : Theme.of(context).colorScheme.secondaryContainer,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          topic.name,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: topic.isUserDefined
+                                ? Theme.of(context).colorScheme.onPrimaryContainer
+                                : Theme.of(context).colorScheme.onSecondaryContainer,
+                          ),
+                        ),
+                      )).toList(),
+                    ),
+                  ),
+                // Summary row - show if session has summary
+                if (session.summary != null && session.summary!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: Text(
+                      session.summary!,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontStyle: FontStyle.italic,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
               );
             },
           ),

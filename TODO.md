@@ -1,17 +1,53 @@
 # TODO - ABS Platform
 
-## 🔥 High Priority - Next Session
+## 🔥 High Priority - Current Focus
+
+### PASSDOWN.md System ✅ (Session 7 - COMPLETED)
+- [x] Generate PASSDOWN entry on every "Close & Save"
+- [x] "Update Passdown" manual button in chat header
+- [x] Auto-inject PASSDOWN into AI system prompt on session start
+- [x] Semantic archiving (status=Complete → moves to Archive)
+- [x] Structured entries: Status, Working On, Next Steps, Blockers, Key Decisions
+- [x] All 3 AI providers updated to understand PASSDOWN context
+
+### Session Notes Auto-Update System ✅ (Session 7 - COMPLETED)
+- [x] "Update Notes" button in chat header for manual updates
+- [x] "Close & Save" auto-updates SESSION_NOTES.md with AI summary
+- [x] Smart hybrid update logic (hard-coded + AI-decided)
+- [x] AI milestone prompts (after 5 file ops, 15 messages, or 3 topics)
+- [x] Topic tracking with `#topic:` tags in chat
+- [x] Duplicate prevention (tracks message count at last update)
+- [x] AI decides if new messages are "meaningful" before updating
 
 ### Python Script Execution (NEXT FOCUS)
-
 - [ ] Add Python detection and path configuration
 - [ ] Implement script execution in sandboxed environment
 - [ ] Capture and display script output in AI chat
 - [ ] Allow AI to create and run Python scripts with `=== EXECUTE: script.py ===` format
 - [ ] Handle script errors and display meaningful messages
 
-### Excel/VBA Operations (via Python)
+## 🚀 Future Roadmap
 
+### Phase 1: Multi-Session Windows
+- [ ] Multiple session windows open simultaneously
+- [ ] Session-specific heartbeat files (`.abs_heartbeat_{sessionId}`)
+- [ ] Independent sessions working on different aspects
+- [ ] Session-to-session context passing
+
+### Phase 2: Multi-Agent Architecture
+- [ ] Agent identity system (each window knows which "agent" it is)
+- [x] **PASSDOWN.md** - Shared communication file between agents ✅
+- [ ] Task queue system (agents claim tasks, mark complete)
+- [ ] Dependency tracking ("blocked by Agent 2")
+- [ ] Conflict resolution for simultaneous file edits
+
+### Phase 3: Governed Agent Teams
+- [ ] All agents obey governance files (AI_RULES, AI_CONTEXT_INDEX)
+- [ ] Agents can post tasks for other agents
+- [ ] Human oversight dashboard showing all agent activity
+- [ ] Agent specialization (UI Agent, API Agent, Test Agent)
+
+### Excel/VBA Operations (via Python)
 - [ ] Excel file reading/writing support (openpyxl, pandas)
 - [ ] Display Excel content in tabular view
 - [ ] VBA extraction from Excel files (xlwings or win32com)
@@ -20,20 +56,38 @@
 
 ## ⏳ Medium Priority
 
-### File Editor Enhancements
+### SESSION_NOTES.md Improvements
+- [ ] Update/merge existing session entries instead of always inserting new
+- [ ] Table of contents at top of file
+- [ ] Search across all sessions
 
+### File Editor Enhancements
 - [ ] Add syntax highlighting to re_editor (configure CodeHighlightTheme)
 - [ ] Add line numbers display
 - [ ] Add code folding indicators
 - [ ] Configure language-specific highlighting (Markdown, Dart, Python)
 
 ### UI Enhancements
-
 - [ ] Markdown rendering in file viewer
 - [ ] Search/replace in file editor
 - [ ] File rename functionality
+- [ ] Multi-project dashboard view
 
-## ✅ Completed (December 7, 2025)
+## ✅ Completed
+
+### Session Notes & Topic System ✅ (Session 7 - December 7, 2025)
+- [x] SessionTopic model with name, summary, isUserDefined, createdAt
+- [x] Topic tracking in Session model (topics, summary, keyDecisions)
+- [x] `#topic:` tag parsing in chat messages
+- [x] Topic chips bar in chat UI
+- [x] "Update Notes" button - manual SESSION_NOTES.md update
+- [x] "Close & Save" - smart auto-update with AI summary
+- [x] Smart hybrid logic: file ops/topics = always update, messages-only = AI decides
+- [x] AI meaningful content check ("Is this worth documenting?")
+- [x] Duplicate prevention based on activity tracking
+- [x] AI milestone prompts after significant progress
+- [x] Conservative AI file operations (only when explicitly asked)
+- [x] Removed duplicate Close & Save buttons (kept blue one in title bar)
 
 ### Session Timing & Heartbeat Improvements ✅ (Session 6)
 - [x] Fix `copyWith(endedAt: null)` not clearing endedAt (added `clearEndedAt` flag)
@@ -55,6 +109,7 @@
 - [x] AI folder deletion with trailing slash syntax
 - [x] Fix AI file append (regex for multi-line content)
 - [x] Pre-load ALL project files into AI context
+- [x] Conservative file operation prompts (only when explicitly asked)
 
 ### File Management ✅
 - [x] Live file updates with FileSystemWatcher (recursive)
@@ -76,28 +131,42 @@
 
 1. **Old Project Data** - Null subtype error (NON-BLOCKING)
 2. **MissingPluginException** - setFrameAutosaveName (macOS method on Windows, non-blocking)
+3. **HeartbeatChecker** - FormatException on invalid date (non-blocking, handled)
 
-## 📝 Technical Notes for Next Session
+## 📝 Technical Notes
 
-### Python Execution Implementation
+### Smart Session Notes Update Logic
 
-```dart
-// Suggested format for AI to execute scripts:
-// === EXECUTE: script.py ===
-// import pandas as pd
-// df = pd.read_excel('data.xlsx')
-// print(df.head())
-// === END ===
-
-// file_service.dart
-Future<ProcessResult> executePythonScript(String projectPath, String scriptPath) async {
-  return await Process.run('python', [scriptPath], 
-    workingDirectory: projectPath,
-    runInShell: true);
-}
+```
+User clicks "Update Notes" → Always update (forceUpdate: true)
+User clicks "Close & Save" → Smart logic (forceUpdate: false):
+  1. New file operations since last update? → Update
+  2. New topics added since last update? → Update  
+  3. Only new messages? → Ask AI if meaningful
+  4. AI says "yes" → Update
+  5. AI says "no" → Skip (avoid clutter)
 ```
 
-### Key Python Packages for Excel/VBA
+### Multi-Agent Vision
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   GOVERNANCE LAYER                          │
+│  AI_RULES_AND_BEST_PRACTICES.md ← All agents obey          │
+│  AI_CONTEXT_INDEX.md ← Shared project knowledge            │
+│  TODO.md ← Task queue                                       │
+│  PASSDOWN.md ← Agent-to-agent communication                │
+└─────────────────────────────────────────────────────────────┘
+                    ▲           ▲           ▲
+              ┌─────┴───┐ ┌─────┴───┐ ┌─────┴───┐
+              │ Agent 1 │ │ Agent 2 │ │ Agent 3 │
+              │ (UI)    │ │ (API)   │ │ (Tests) │
+              └─────────┘ └─────────┘ └─────────┘
+```
+
+---
+
+**Last Updated**: December 7, 2025 (Session 7)
 - `openpyxl` - Read/write Excel files (.xlsx)
 - `pandas` - Data analysis with Excel support
 - `xlwings` - Full Excel/VBA automation (requires Excel)

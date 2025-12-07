@@ -134,6 +134,50 @@ enum ProjectStatus {
   template,
 }
 
+/// Represents a topic discussed within a session
+/// 
+/// Topics can be AI-detected or user-defined via #topic: tag
+class SessionTopic {
+  final String name;           // e.g., "heartbeat-timing"
+  final String? summary;       // What was discussed about this topic
+  final bool isUserDefined;    // User tagged via #topic: vs AI detected
+  final DateTime createdAt;    // When this topic was added
+
+  SessionTopic({
+    required this.name,
+    this.summary,
+    this.isUserDefined = false,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'summary': summary,
+    'isUserDefined': isUserDefined,
+    'createdAt': createdAt.toIso8601String(),
+  };
+
+  factory SessionTopic.fromJson(Map<String, dynamic> json) => SessionTopic(
+    name: json['name'] as String? ?? '',
+    summary: json['summary'] as String?,
+    isUserDefined: json['isUserDefined'] as bool? ?? false,
+    createdAt: json['createdAt'] != null 
+        ? DateTime.parse(json['createdAt'] as String)
+        : DateTime.now(),
+  );
+
+  SessionTopic copyWith({
+    String? name,
+    String? summary,
+    bool? isUserDefined,
+  }) => SessionTopic(
+    name: name ?? this.name,
+    summary: summary ?? this.summary,
+    isUserDefined: isUserDefined ?? this.isUserDefined,
+    createdAt: createdAt,
+  );
+}
+
 /// Represents a work session within a project
 class Session {
   final String id;
@@ -146,6 +190,11 @@ class Session {
   final SessionStatus status;
   final List<Map<String, dynamic>> conversationHistory;
   final Duration accumulatedDuration;  // Total time from previous open/close cycles
+  
+  // Topic & Summary fields (Phase 1)
+  final List<SessionTopic> topics;     // AI-detected + user-defined topics
+  final String? summary;                // AI-generated session summary
+  final List<String> keyDecisions;      // Important decisions made
 
   Session({
     String? id,
@@ -158,10 +207,15 @@ class Session {
     this.status = SessionStatus.inProgress,
     List<Map<String, dynamic>>? conversationHistory,
     this.accumulatedDuration = Duration.zero,
+    List<SessionTopic>? topics,
+    this.summary,
+    List<String>? keyDecisions,
   })  : id = id ?? const Uuid().v4(),
         startedAt = startedAt ?? DateTime.now(),
         filesModified = filesModified ?? [],
-        conversationHistory = conversationHistory ?? [];
+        conversationHistory = conversationHistory ?? [],
+        topics = topics ?? [],
+        keyDecisions = keyDecisions ?? [];
 
   /// Calculate total session duration (accumulated + current period)
   /// 
@@ -199,6 +253,10 @@ class Session {
     SessionStatus? status,
     List<Map<String, dynamic>>? conversationHistory,
     Duration? accumulatedDuration,
+    List<SessionTopic>? topics,
+    String? summary,
+    bool clearSummary = false,
+    List<String>? keyDecisions,
   }) {
     return Session(
       id: id,
@@ -211,6 +269,9 @@ class Session {
       status: status ?? this.status,
       conversationHistory: conversationHistory ?? this.conversationHistory,
       accumulatedDuration: accumulatedDuration ?? this.accumulatedDuration,
+      topics: topics ?? this.topics,
+      summary: clearSummary ? null : (summary ?? this.summary),
+      keyDecisions: keyDecisions ?? this.keyDecisions,
     );
   }
 
@@ -226,6 +287,9 @@ class Session {
       'status': status.toString(),
       'conversationHistory': conversationHistory,
       'accumulatedDurationMs': accumulatedDuration.inMilliseconds,
+      'topics': topics.map((t) => t.toJson()).toList(),
+      'summary': summary,
+      'keyDecisions': keyDecisions,
     };
   }
 
@@ -250,6 +314,11 @@ class Session {
           ? List<Map<String, dynamic>>.from(json['conversationHistory'])
           : [],
       accumulatedDuration: Duration(milliseconds: json['accumulatedDurationMs'] as int? ?? 0),
+      topics: (json['topics'] as List?)
+          ?.map((t) => SessionTopic.fromJson(t as Map<String, dynamic>))
+          .toList() ?? [],
+      summary: json['summary'] as String?,
+      keyDecisions: List<String>.from(json['keyDecisions'] ?? []),
     );
   }
 }

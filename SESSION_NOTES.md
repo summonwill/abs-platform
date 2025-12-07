@@ -1,5 +1,105 @@
 # Session Notes - ABS Platform
 
+## Session 7: December 7, 2025 - Session Notes Auto-Update & Future Vision ✅
+
+### Objectives
+- Implement session notes auto-update system
+- Add topic tracking with `#topic:` tags
+- Create smart hybrid update logic (hard-coded + AI-decided)
+- Fix duplicate AI buttons (removed green, kept blue)
+- Document future roadmap (multi-agent architecture)
+
+### Work Completed
+
+#### 1. Session Notes Auto-Update System ✅
+- **"Update Notes" Button**: Added to chat header for manual updates
+- **"Close & Save" Button**: Now auto-updates SESSION_NOTES.md with AI summary
+- **Smart Hybrid Logic**: 
+  - File operations since last update → Always update
+  - New topics since last update → Always update
+  - Only messages → Ask AI if meaningful
+- **AI Summary Generation**: Creates title, summary, topics, key decisions, files modified
+
+#### 2. Topic Tracking System ✅
+- **SessionTopic Model**: name, summary, isUserDefined, createdAt
+- **#topic: Tags**: Type `#topic:auth` in chat to add topic
+- **Topic Chips Bar**: Shows current topics in chat header
+- **Topics Saved**: Stored in session model and displayed on session cards
+
+#### 3. AI Milestone Prompts ✅
+- **Tracking**: File operations, messages, topic changes
+- **Prompt Conditions**: 5+ file ops, 15+ messages, or 3+ topics
+- **Friendly Message**: Suggests updating notes after significant progress
+
+#### 4. Smart Duplicate Prevention ✅
+- **Tracks**: `_messageCountAtLastNotesUpdate`, `_fileOpsAtLastNotesUpdate`, `_topicsAtLastNotesUpdate`
+- **Logic**: Skip update if no new meaningful activity
+- **AI Check**: For message-only changes, asks AI "Is this worth documenting?"
+
+#### 5. Conservative AI File Operations ✅
+- **Problem**: AI was creating/deleting files on casual conversation
+- **Solution**: Updated system prompts for all providers (OpenAI, Anthropic, Gemini)
+- **New Rule**: "ONLY perform file operations when user EXPLICITLY asks"
+
+#### 6. UI Cleanup ✅
+- Removed duplicate green "Close & Save" button from ai_chat_screen.dart
+- Kept blue "Close & Save" button in ai_chat_window.dart title bar
+- Blue button now calls smart update logic before closing
+
+### Files Modified
+- `lib/models/project.dart` - SessionTopic class, topics/summary/keyDecisions fields
+- `lib/screens/ai_chat_screen.dart` - Topic tracking, notes update logic, milestone prompts
+- `lib/windows/ai_chat_window.dart` - Smart update on close
+- `lib/services/ai_service.dart` - Conservative file operation prompts
+
+### Future Vision Documented
+
+#### Multi-Session Windows (Phase 1)
+- Multiple session windows open simultaneously
+- Session-specific heartbeat files
+- Independent sessions working on different aspects
+
+#### Multi-Agent Architecture (Phase 2)
+- Agent identity system (each window knows which "agent" it is)
+- **PASSDOWN.md** - Shared communication file between agents
+- Task queue system (agents claim tasks, mark complete)
+- Dependency tracking ("blocked by Agent 2")
+
+#### Governed Agent Teams (Phase 3)
+- All agents obey governance files (AI_RULES, AI_CONTEXT_INDEX)
+- Agents can post tasks for other agents
+- Human oversight dashboard
+- Agent specialization (UI Agent, API Agent, Test Agent)
+
+### Technical Details
+
+**Smart Update Logic:**
+```
+User clicks "Update Notes" → Always update (forceUpdate: true)
+User clicks "Close & Save" → Smart logic (forceUpdate: false):
+  1. New file operations? → Update
+  2. New topics? → Update
+  3. Only messages? → Ask AI if meaningful
+  4. AI says "yes" → Update
+  5. AI says "no" → Skip
+```
+
+**Governance Hierarchy:**
+```
+Human (you)
+    │
+    ▼
+Governance Files ──────► Law of the land
+    │
+    ▼
+PASSDOWN.md ──────────► Agent coordination (future)
+    │
+    ▼
+Agents ───────────────► Workers following the rules
+```
+
+---
+
 ## Session 6: December 7, 2025 - Session Timing & Heartbeat Improvements ✅
 
 ### Objectives

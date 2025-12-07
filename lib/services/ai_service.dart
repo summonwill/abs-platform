@@ -102,8 +102,18 @@ class AIService {
         'content': '''You are an AI assistant helping with project management using the AI Bootstrap System (ABS).
 The user has provided their project governance files, file structure, and relevant file contents. Help them manage their project.
 
+📋 PASSDOWN CONTEXT:
+If you see [PASSDOWN] in your context, this contains the active handoff information from previous sessions.
+- Read PASSDOWN to understand what was being worked on
+- Use it to maintain continuity across sessions
+- Reference it when you're uncertain about project state or history
+
+🔴 IMPORTANT: ONLY perform file operations when the user EXPLICITLY asks you to create, update, delete, add, modify, or remove a file or folder. 
+- If the user is just chatting or asking questions, respond conversationally WITHOUT any file operations.
+- Do NOT assume the user wants file changes unless they clearly state it.
+
 🔴 MANDATORY FILE/FOLDER OPERATION FORMAT 🔴
-When the user asks you to CREATE, UPDATE, or DELETE ANY file or folder, you MUST use this EXACT format:
+When the user EXPLICITLY asks you to CREATE, UPDATE, or DELETE a file or folder, you MUST use this EXACT format:
 
 FOR CREATING FILES:
 === CREATE: path/to/filename.ext ===
@@ -134,6 +144,7 @@ RULES:
 3. Use trailing slash (/) for folders
 4. For UPDATE, include COMPLETE file with changes merged in
 5. Add explanation after --- separator
+6. ONLY do file operations when explicitly requested by the user
 
 You have FULL access to read, write, modify, and delete ANY file or folder in the project directory and all subdirectories.'''
       },
@@ -217,7 +228,13 @@ You have FULL access to read, write, modify, and delete ANY file or folder in th
           'max_tokens': 4096,
           'system': 'You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
               'The user has provided their project governance files, file structure, and relevant file contents.\n\n'
-              'FILE/FOLDER OPERATIONS - Use this EXACT format:\n\n'
+              'PASSDOWN CONTEXT: If you see [PASSDOWN] in your context, this contains handoff information from previous sessions. '
+              'Use it to understand what was being worked on and maintain continuity.\n\n'
+              'IMPORTANT: ONLY perform file operations when the user EXPLICITLY asks you to create, update, modify, or delete files.\n'
+              '- Casual conversation does NOT require file operations\n'
+              '- Questions about the project do NOT require file operations\n'
+              '- Only use === CREATE/UPDATE/DELETE === when the user clearly requests a file change\n\n'
+              'FILE/FOLDER OPERATIONS - Use this EXACT format (only when explicitly requested):\n\n'
               'CREATE file: === CREATE: path/to/file.ext ===\\n(content)\n'
               'CREATE folder: === CREATE: path/to/folder/ ===\n'
               'UPDATE file: === UPDATE: path/to/file.ext ===\\n(COMPLETE content with changes)\n'
@@ -256,7 +273,13 @@ You have FULL access to read, write, modify, and delete ANY file or folder in th
           {
             'text': 'System: You are an AI assistant helping with project management using the AI Bootstrap System (ABS). '
                 'The user has provided their project governance files, file structure, and relevant file contents.\n\n'
-                'FILE/FOLDER OPERATIONS - Use this EXACT format:\n\n'
+                'PASSDOWN CONTEXT: If you see [PASSDOWN] in your context, this contains handoff information from previous sessions. '
+                'Use it to understand what was being worked on and maintain continuity.\n\n'
+                'IMPORTANT: ONLY perform file operations when the user EXPLICITLY asks you to create, update, modify, or delete files.\n'
+                '- Casual conversation does NOT require file operations\n'
+                '- Questions about the project do NOT require file operations\n'
+                '- Only use === CREATE/UPDATE/DELETE === when the user clearly requests a file change\n\n'
+                'FILE/FOLDER OPERATIONS - Use this EXACT format (only when explicitly requested):\n\n'
                 'CREATE file: === CREATE: path/to/file.ext ===\\n(content)\n'
                 'CREATE folder: === CREATE: path/to/folder/ ===\n'
                 'UPDATE file: === UPDATE: path/to/file.ext ===\\n(COMPLETE content with changes)\n'
