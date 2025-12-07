@@ -63,15 +63,15 @@ class _AIChatWindowState extends State<AIChatWindow> {
   }
   
   /// Save the session and then close the window
-  /// This updates SESSION_NOTES.md with AI summary before closing (if meaningful)
+  /// This updates both SESSION_NOTES.md and PASSDOWN.md in parallel before closing
   Future<void> _saveAndClose() async {
-    print('DEBUG: Close button pressed - updating session notes and stopping session');
+    print('DEBUG: Close button pressed - updating session notes and PASSDOWN in parallel');
     try {
       final state = _chatScreenKey.currentState;
       if (state != null) {
-        // Update session notes with smart logic (AI decides if meaningful)
-        await state.updateSessionNotes(showSuccessMessage: false, forceUpdate: false);
-        // Then stop the session
+        // Run both AI summary calls in parallel (faster than sequential)
+        await state.saveSessionParallel();
+        // Then stop the session (just file I/O, no API calls)
         await state.stopSessionOnClose();
       }
     } catch (e) {

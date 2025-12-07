@@ -13,6 +13,7 @@
 /// Performance: Handles 10,000+ line files efficiently
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'package:flutter/material.dart';
 import 'package:code_text_field/code_text_field.dart';

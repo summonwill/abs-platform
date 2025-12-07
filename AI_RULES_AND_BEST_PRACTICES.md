@@ -13,7 +13,7 @@
 >
 > ### For NEW projects (no governance files yet):
 > 1. **Read this file completely** (especially Section 9: Auto-Generation Protocol)
-> 2. **Detect missing governance files:** Check if `AI_CONTEXT_INDEX.md`, `TODO.md`, `SESSION_NOTES.md`, or `SESSION_BUFFER.md` are missing
+> 2. **Detect missing governance files:** Check if `AI_CONTEXT_INDEX.md`, `TODO.md`, `SESSION_NOTES.md`, or `PASSDOWN.md` are missing
 > 3. **Generate minimal valid versions** of missing files exactly as defined in Section 9
 > 4. **Export files using best available method:**
 >    - **If Python/Code Interpreter available:** Create `governance_files.zip` containing all governance files (Method 2, Section 1.2)
@@ -41,7 +41,7 @@
 > 1. **Update governance files:**
 >    - Add session entry to `SESSION_NOTES.md`
 >    - Update `TODO.md` (mark completed tasks, add new ones)
->    - Collapse `SESSION_BUFFER.md` into `SESSION_NOTES.md` (Section 8.2 step 4)
+>    - Update `PASSDOWN.md` with current status, blockers, and next steps (Section 9.4)
 > 2. **Export updated files** using best available method (zip or markdown blocks)
 > 3. **Remind user** to commit changes and upload all files next session
 >
@@ -100,7 +100,7 @@
     - [9.1 `AI_CONTEXT_INDEX.md` (Project Context Map)](#91-ai_context_indexmd-project-context-map)
     - [9.2 `TODO.md` (Task Registry)](#92-todomd-task-registry)
     - [9.3 `SESSION_NOTES.md` (Temporal Log)](#93-session_notesmd-temporal-log)
-    - [9.4 `SESSION_BUFFER.md` (Working Memory)](#94-session_buffermd-working-memory)
+    - [9.4 `PASSDOWN.md` (Living Context / Agent Handoff)](#94-passdownmd-living-context--agent-handoff)
     - [9.5 `/archive/` Directory](#95-archive-directory)
     - [9.6 Task-Specific State Files](#96-task-specific-state-files)
   - [10. Logging, Audit, and Archive Rules](#10-logging-audit-and-archive-rules)
@@ -194,7 +194,7 @@ Whenever an AI agent is invoked to work in this project, it MUST follow this boo
    - `AI_CONTEXT_INDEX.md` (if exists)
    - `TODO.md` (if exists)
    - `SESSION_NOTES.md` (if exists)
-   - `SESSION_BUFFER.md` (if exists from previous session)
+   - `PASSDOWN.md` (critical for session continuity)
    - Any task-specific state files referenced in `AI_CONTEXT_INDEX.md`
 
 2. **Agent validates uploaded files:**
@@ -246,7 +246,7 @@ Follow these steps automatically:
    - AI_CONTEXT_INDEX.md
    - TODO.md
    - SESSION_NOTES.md
-   - SESSION_BUFFER.md (for this active session)
+   - PASSDOWN.md (for session continuity)
 3. If Python/Code Interpreter is available:
    - Use Method 2 (Section 1.2) to create governance_files.zip
    - Include all 4 files in the zip
@@ -273,7 +273,7 @@ Uploading current governance files:
 - AI_CONTEXT_INDEX.md
 - TODO.md
 - SESSION_NOTES.md
-- SESSION_BUFFER.md (if exists from last session)
+- PASSDOWN.md (critical for continuity)
 
 Steps:
 
@@ -309,7 +309,7 @@ Steps:
    - Add new session entry to SESSION_NOTES.md (date, summary, files touched, risks)
    - Update TODO.md (mark completed tasks, add follow-ups)
    - Update AI_CONTEXT_INDEX.md (if structure changed)
-   - Collapse SESSION_BUFFER.md into SESSION_NOTES.md (Section 8.2 step 4)
+   - Update PASSDOWN.md with current status and next steps
 
 2. Export updated files:
    - If Python available: Create governance_files.zip with all updated files
@@ -844,9 +844,10 @@ When continuing work across multiple sessions, the agent MUST maintain consisten
 
 At the **start** of each session, the agent SHOULD:
 
-1. Read the most recent sections of `SESSION_NOTES.md`.
-2. Read `TODO.md` for ongoing tasks.
-3. Read any task-specific state docs referenced by `AI_CONTEXT_INDEX.md`.
+1. **Read `PASSDOWN.md` Active Context** for session continuity (critical!)
+2. Read the most recent sections of `SESSION_NOTES.md`.
+3. Read `TODO.md` for ongoing tasks.
+4. Read any task-specific state docs referenced by `AI_CONTEXT_INDEX.md`.
 
 At the **end** of each session, the agent MUST:
 
@@ -859,11 +860,11 @@ At the **end** of each session, the agent MUST:
    - Mark completed items
    - Add new follow-up tasks
 3. Update `AI_CONTEXT_INDEX.md` if new areas were introduced.
-4. **Collapse `SESSION_BUFFER.md` into `SESSION_NOTES.md`** (if buffer exists):
-   - Review buffer "Decisions to Commit" section
-   - Add important decisions and outcomes to permanent SESSION_NOTES.md entry
-   - Discard temporary experiments, failed attempts, and draft notes
-   - Clear buffer or mark for archive (fresh start next session)
+4. **Update `PASSDOWN.md`** with session continuity context:
+   - Set status (In Progress, Blocked, Complete)
+   - Summarize what was worked on
+   - List next steps and any blockers
+   - Entries marked "Complete" will be archived automatically
 
 ### 8.3 Version Control Integration
 
@@ -997,57 +998,82 @@ Chronological log of AI and engineer work sessions.
 
 Each new session appends a new section at the bottom (increment session number).
 
-### 9.4 `SESSION_BUFFER.md` (Working Memory)
+### 9.4 `PASSDOWN.md` (Living Context / Agent Handoff)
 
-**Purpose:** Temporary workspace for active session thoughts, experiments, and draft notes.
+**Purpose:** Living context document that enables session continuity and multi-agent coordination. Unlike SESSION_NOTES.md (which is historical), PASSDOWN.md represents the **current state** of work.
+
+**Why PASSDOWN matters:**
+- Without PASSDOWN, every AI session starts from scratch
+- With PASSDOWN, the AI knows where you left off, what's blocked, and what to do next
+- Enables single-agent continuity AND multi-agent coordination
 
 **When to create:**
-- Long multi-hour sessions
-- Experimental work with uncertain outcomes
-- Complex multi-step tasks requiring working notes
-- When session needs "scratch paper" separate from permanent record
+- **Always** — every project should have PASSDOWN.md
+- Auto-generated on first session close if missing
 
 **Lifecycle:**
-1. **Created at session start** (if not present from previous session)
-2. **Agent writes drafts** during session:
-   - Experiments and trial approaches
-   - Temporary thoughts and reasoning
-   - Questions to resolve
-   - Draft solutions before committing
-3. **At session end** (critical step):
-   - Collapse buffer into permanent `SESSION_NOTES.md` entry
-   - Only keep important decisions and final outcomes
-   - Clear buffer or archive for next session
+1. **Read on session start** — AI reads Active Context section for continuity
+2. **Updated during session** — When significant progress is made
+3. **Updated at session end** — New entry prepended to Active Context
+4. **Semantic archiving** — Entries with status "Complete" move to Archive section
 
 **Format:**
 
 ```md
-# Session Buffer - [Date]
+# PASSDOWN.md - [Project Name]
 
-## Working Notes
+> **Purpose**: Living context document for session continuity and agent handoff.
+> AI agents read this on session start to understand current state.
+> Updated automatically on session close.
 
-[Agent uses this section for drafts, experiments, temporary thoughts]
+## Active Context
 
-## Decisions to Commit
+### [YYYY-MM-DD HH:MM] Session Name
+**Status**: In Progress | Blocked | Complete
+**Working On**: Brief description of current task
 
-[Final decisions that will go into SESSION_NOTES.md]
+Summary of what was accomplished.
 
-## Questions / Uncertainties
+**Next Steps**:
+- Step 1
+- Step 2
 
-[Items requiring engineer input]
+**Blockers**:
+- ⚠️ Any blockers (or empty if none)
 
-## Experiments
+**Key Decisions**:
+- Important decisions made
 
-[Trial approaches, test results, failed attempts]
+**Files Modified**:
+- `file1.dart`
+- `file2.md`
+
+**Context**: Any additional context for the next agent
+
+---
+
+## Archive
+
+<!-- Completed entries move here automatically -->
+
+<details>
+<summary>[YYYY-MM-DD] Completed Session Title</summary>
+
+...archived entry content...
+
+</details>
 ```
 
-**Benefits:**
-- Keeps SESSION_NOTES.md clean and historical
-- Allows messy thinking without polluting permanent record
-- Enables longer sessions without context drift
-- Separates "work in progress" from "work completed"
+**Key Differences from SESSION_NOTES.md:**
 
-**Browser/Mobile users:** SESSION_BUFFER.md is included in zip exports and should be uploaded in subsequent sessions if it exists.
+| SESSION_NOTES.md | PASSDOWN.md |
+|------------------|-------------|
+| Historical record | Living context |
+| Permanent log | Active + Archive |
+| Read for history | Read for continuity |
+| All sessions | Only current state |
+
+**Browser/Mobile users:** PASSDOWN.md is critical — upload it every session for AI continuity.
 
 ### 9.5 `/archive/` Directory
 

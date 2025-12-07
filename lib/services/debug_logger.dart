@@ -12,6 +12,7 @@
 ///   DebugLogger.error('Error occurred', error, stackTrace);
 /// 
 /// Last Modified: December 5, 2025
+library;
 
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';

@@ -71,9 +71,43 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
     WidgetsBinding.instance.addObserver(this);
     _loadConversationHistory();
     
+    // Ensure PASSDOWN.md exists for session continuity
+    _ensurePassdownExists();
+    
     // Start heartbeat for separate windows so main window can detect if we crash
     if (widget.isInSeparateWindow) {
       _startHeartbeat();
+    }
+  }
+  
+  /// Ensure PASSDOWN.md exists in the project directory
+  /// Creates it if missing so AI always has continuity context
+  Future<void> _ensurePassdownExists() async {
+    try {
+      final passdownPath = '${widget.project.path}${Platform.pathSeparator}PASSDOWN.md';
+      final file = File(passdownPath);
+      
+      if (!await file.exists()) {
+        // Create initial PASSDOWN.md
+        final initialContent = '''# PASSDOWN.md - ${widget.project.name}
+
+> **Purpose**: Living context document for session continuity and agent handoff.
+> AI agents read this on session start to understand current state.
+> Updated automatically on session close.
+
+## Active Context
+
+<!-- New entries will be added here automatically -->
+
+## Archive
+
+<!-- Completed entries move here -->
+''';
+        await file.writeAsString(initialContent);
+        print('DEBUG: Created initial PASSDOWN.md');
+      }
+    } catch (e) {
+      print('DEBUG: Failed to ensure PASSDOWN.md exists: $e');
     }
   }
   
@@ -136,6 +170,157 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
   /// Stop the active session when the chat window is closed
   /// Saves final state to file so main window can sync it
   /// Made public so it can be called from parent window before close
+  
+  /// Save session with both SESSION_NOTES.md and PASSDOWN.md in a SINGLE API call
+  /// Called from _saveAndClose to minimize delay and API costs
+  /// Returns true if successful
+  Future<bool> saveSessionParallel() async {
+    if (_messages.isEmpty) return true;
+    
+    // Skip if trivial session (fewer than 2 messages, no file operations)
+    final hasFileOps = _messages.any((m) => m.fileUpdates.isNotEmpty);
+    if (_messages.length < 2 && !hasFileOps) {
+      print('DEBUG: Trivial session (${_messages.length} msgs, no file ops) - skipping summary API call');
+      return true;
+    }
+    
+    try {
+      // Single API call that returns both SESSION_NOTES and PASSDOWN data
+      final combinedData = await _generateSessionCloseData();
+      
+      if (combinedData != null) {
+        final sessionSummary = combinedData['sessionNotes'] as Map<String, dynamic>?;
+        final passdownEntry = combinedData['passdown'] as Map<String, dynamic>?;
+        
+        // Write both files in parallel (fast file I/O)
+        await Future.wait([
+          if (sessionSummary != null) _syncToSessionNotes(sessionSummary),
+          if (passdownEntry != null) _syncToPassdown(passdownEntry),
+        ]);
+        
+        // Save summary to session model
+        if (sessionSummary != null) {
+          await _saveSessionSummary(sessionSummary);
+        }
+        
+        print('DEBUG: Single-call save complete - SESSION_NOTES: ${sessionSummary != null}, PASSDOWN: ${passdownEntry != null}');
+      }
+      return true;
+    } catch (e) {
+      print('DEBUG: Error during save: $e');
+      return false;
+    }
+  }
+  
+  /// Generate both SESSION_NOTES and PASSDOWN data in a single API call
+  /// This saves API costs (1 call instead of 2) and is faster
+  Future<Map<String, dynamic>?> _generateSessionCloseData() async {
+    final aiKeys = widget.isInSeparateWindow && widget.initialApiKeys != null
+        ? widget.initialApiKeys!
+        : ref.read(aiKeysProvider);
+    
+    if (!aiKeys.hasAnyKey) return null;
+    
+    final aiService = ref.read(aiServiceProvider);
+    aiService.setAPIKeys(
+      openAI: aiKeys.openAI,
+      anthropic: aiKeys.anthropic,
+      gemini: aiKeys.gemini,
+    );
+    
+    // Build conversation text
+    final conversationText = _messages.map((m) {
+      return '${m.isUser ? "User" : "AI"}: ${m.content}';
+    }).join('\n\n');
+    
+    // Get list of file operations
+    final fileOps = <String>[];
+    for (final msg in _messages) {
+      if (msg.fileUpdates.isNotEmpty) {
+        fileOps.addAll(msg.fileUpdates.keys);
+      }
+    }
+    
+    final filesStr = fileOps.isNotEmpty ? 'FILES MODIFIED: ${fileOps.join(", ")}' : '';
+    final topicsStr = _sessionTopics.isNotEmpty 
+        ? 'TOPICS DISCUSSED: ${_sessionTopics.map((t) => t.name).join(", ")}' 
+        : '';
+    
+    // Combined prompt for both outputs
+    final combinedPrompt = '''Analyze this session and provide TWO outputs: a session summary for notes, and a PASSDOWN handoff entry.
+
+CONVERSATION:
+$conversationText
+
+$filesStr
+$topicsStr
+
+Respond with ONLY a JSON object (no markdown, no code blocks) in this EXACT format:
+{
+  "sessionNotes": {
+    "title": "Brief session title (3-6 words)",
+    "summary": "2-3 sentence summary of what was accomplished",
+    "topics": ["topic1", "topic2"],
+    "keyDecisions": ["Decision or outcome 1"],
+    "filesModified": ["file1.dart"]
+  },
+  "passdown": {
+    "workingOn": "Brief description of current task/focus",
+    "status": "In Progress",
+    "summary": "2-3 sentences for next agent",
+    "nextSteps": ["Step 1", "Step 2"],
+    "blockers": [],
+    "context": "Additional context for continuity"
+  }
+}
+
+For passdown.status use: "In Progress", "Blocked", or "Complete"''';
+
+    try {
+      final selectedProvider = ref.read(selectedAIProviderProvider);
+      final selectedModel = ref.read(selectedModelProvider)[selectedProvider];
+      
+      final response = await aiService.sendMessage(
+        provider: selectedProvider,
+        model: selectedModel,
+        message: combinedPrompt,
+        conversationHistory: [],
+        projectContext: {},
+      );
+      
+      // Parse JSON from response
+      var jsonStr = response.trim();
+      if (jsonStr.contains('```')) {
+        final jsonMatch = RegExp(r'```(?:json)?\s*([\s\S]*?)```').firstMatch(jsonStr);
+        if (jsonMatch != null) {
+          jsonStr = jsonMatch.group(1)?.trim() ?? jsonStr;
+        }
+      }
+      
+      return jsonDecode(jsonStr) as Map<String, dynamic>;
+    } catch (e) {
+      print('DEBUG: Failed to generate session close data: $e');
+      // Return basic data if AI fails
+      return {
+        'sessionNotes': {
+          'title': 'Session ${DateTime.now().toString().split(' ')[0]}',
+          'summary': 'Session with ${_messages.length} messages.',
+          'topics': _sessionTopics.map((t) => t.name).toList(),
+          'keyDecisions': <String>[],
+          'filesModified': fileOps,
+        },
+        'passdown': {
+          'workingOn': 'Session work',
+          'status': 'In Progress',
+          'summary': 'Session with ${_messages.length} messages.',
+          'nextSteps': <String>[],
+          'blockers': <String>[],
+          'context': '',
+        },
+      };
+    }
+  }
+
   Future<void> stopSessionOnClose() async {
     try {
       // Cancel heartbeat first so main window doesn't re-complete the session
@@ -153,8 +338,9 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
         return;
       }
       
-      // Update PASSDOWN.md before closing
-      await updatePassdown(forceUpdate: false);
+      // Note: PASSDOWN.md update is now done in saveSessionParallel()
+      // Only call updatePassdown here if saveSessionParallel wasn't called first
+      // (e.g., when window is closed via dispose without using Close & Save button)
       
       // Update session to completed with end time, conversation, and topics
       final updatedSession = activeSession.copyWith(
@@ -427,6 +613,7 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
   }
   
   /// Build a horizontal bar showing current session topics as chips
+  /// Topics are informational labels - read-only, no delete option
   Widget _buildTopicsBar() {
     return Container(
       width: double.infinity,
@@ -446,6 +633,14 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
             size: 16,
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
+          const SizedBox(width: 4),
+          Text(
+            'Topics:',
+            style: TextStyle(
+              fontSize: 11,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: SingleChildScrollView(
@@ -458,8 +653,7 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
                       topic.name,
                       style: const TextStyle(fontSize: 12),
                     ),
-                    deleteIcon: const Icon(Icons.close, size: 14),
-                    onDeleted: () => _removeTopic(topic),
+                    // No delete button - topics are informational only
                     visualDensity: VisualDensity.compact,
                     backgroundColor: topic.isUserDefined
                         ? Theme.of(context).colorScheme.primaryContainer
@@ -474,11 +668,7 @@ class _AIChatScreenState extends ConsumerState<AIChatScreen> with WidgetsBinding
     );
   }
   
-  void _removeTopic(SessionTopic topic) {
-    setState(() {
-      _sessionTopics.removeWhere((t) => t.name == topic.name);
-    });
-  }
+  // Removed _removeTopic - topics are now read-only
 
   Widget _buildProviderSelector() {
     final aiKeys = ref.watch(aiKeysProvider);
